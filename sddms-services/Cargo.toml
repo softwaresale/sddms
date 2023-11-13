@@ -1,0 +1,19 @@
+[package]
+name = "sddms-services"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tonic = "0.10.2"
+prost = "0.12.1"
+sddms-shared = { path = '../sddms-shared' }
+
+[build-dependencies]
+tonic-build = "0.10.2"
+
+[features]
+site-controller = ["shared"]
+central-controller = ["shared"]
+shared = []

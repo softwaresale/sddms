@@ -1,0 +1,9 @@
+
+[workspace]
+members = [
+  "sddms-shared",
+  "sddms-central",
+  "sddms-client",
+  "sddms-site",
+  "sddms-services",
+]

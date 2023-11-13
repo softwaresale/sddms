@@ -1,0 +1,10 @@
+
+syntax = "proto3";
+
+package sddms.shared;
+
+enum FinalizeMode {
+  FINALIZE_MODE_UNSPECIFIED = 0;
+  FINALIZE_MODE_COMMIT = 1;
+  FINALIZE_MODE_ABORT = 2;
+}

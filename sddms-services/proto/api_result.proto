@@ -1,0 +1,17 @@
+
+syntax = "proto3";
+
+package sddms.shared;
+
+enum ReturnStatus {
+  RETURN_STATUS_UNSPECIFIED = 0;
+  RETURN_STATUS_OK = 1;
+  RETURN_STATUS_ERROR = 2;
+}
+
+message ApiError {
+  /// headline error message
+  string message = 1;
+  /// a description of what happened
+  string description = 2;
+}

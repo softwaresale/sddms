@@ -1,0 +1,88 @@
+
+syntax = "proto3";
+
+import "api_result.proto";
+import "finalize_mode.proto";
+
+package sddms.site_manager;
+
+message BeginTransactionRequest {
+  // the optional name of the transaction
+  optional string transaction_name = 1;
+}
+
+message BeginTransactionResults {
+  uint32 transaction_id = 2;
+}
+
+message BeginTransactionResponse {
+  // success or failure
+  sddms.shared.ReturnStatus ret = 1;
+  oneof begin_transaction_payload {
+    sddms.shared.ApiError error = 2;
+    BeginTransactionResults value = 3;
+  };
+}
+
+message InvokeQueryRequest {
+  // the actual query text
+  string query = 1;
+  // the tables we are writing
+  repeated string write_set = 2;
+  // the tables we are reading from
+  repeated string read_set = 3;
+  uint32 transaction_id = 4;
+  // if we expect to get results back from the query
+  bool has_results = 5;
+  // true if the given query should be treated as a transaction with a single statement
+  bool single_stmt_transaction = 6;
+}
+
+message InvokeQueryResults {
+  // if any data was read, returns a cbor payload, which is a list of records
+  optional bytes data_payload = 1;
+  // how many records were affected by query, in lieu of payload data
+  optional uint32 affected_records = 2;
+}
+
+message InvokeQueryResponse {
+  // return status
+  sddms.shared.ReturnStatus ret = 1;
+  oneof invoke_query_payload {
+    sddms.shared.ApiError error = 2;
+    InvokeQueryResults results = 3;
+  }
+}
+
+message FinalizeTransactionRequest {
+  sddms.shared.FinalizeMode mode = 1;
+  uint32 transaction_id = 2;
+}
+
+message FinalizeTransactionResults {
+}
+
+message FinalizeTransactionResponse {
+  sddms.shared.ReturnStatus ret = 1;
+  oneof finalize_transaction_payload {
+    sddms.shared.ApiError error = 2;
+    FinalizeTransactionResults results = 3;
+  }
+}
+
+message ReplicationUpdateRequest {
+  // the query to invoke
+  string query = 1;
+}
+
+message ReplicationUpdateResponse {
+  // the return status
+  sddms.shared.ReturnStatus ret = 1;
+}
+
+service SiteManagerService {
+  rpc BeginTransaction(BeginTransactionRequest) returns (BeginTransactionResponse) {}
+  rpc InvokeQuery(InvokeQueryRequest) returns (InvokeQueryResponse) {}
+  rpc FinalizeTransaction(FinalizeTransactionRequest) returns (FinalizeTransactionResponse) {}
+  rpc ReplicationUpdate(ReplicationUpdateRequest) returns (ReplicationUpdateResponse) {}
+}
