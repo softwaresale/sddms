@@ -6,6 +6,26 @@ import "finalize_mode.proto";
 
 package sddms.site_manager;
 
+message RegisterClientRequest {
+  /// host of the current client
+  string host = 1;
+  /// the port of the current client
+  uint32 port = 2;
+}
+
+message RegisterClientResults {
+  /// the id of the new client
+  uint32 client_id = 1;
+}
+
+message RegisterClientResponse {
+  sddms.shared.ReturnStatus ret = 1;
+  oneof register_client_payload {
+    sddms.shared.ApiError error = 2;
+    RegisterClientResults results = 3;
+  }
+}
+
 message BeginTransactionRequest {
   // the optional name of the transaction
   optional string transaction_name = 1;
@@ -83,6 +103,7 @@ message ReplicationUpdateResponse {
 }
 
 service SiteManagerService {
+  rpc RegisterClient(RegisterClientRequest) returns (RegisterClientResponse) {}
   rpc BeginTransaction(BeginTransactionRequest) returns (BeginTransactionResponse) {}
   rpc InvokeQuery(InvokeQueryRequest) returns (InvokeQueryResponse) {}
   rpc FinalizeTransaction(FinalizeTransactionRequest) returns (FinalizeTransactionResponse) {}
