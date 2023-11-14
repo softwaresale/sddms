@@ -79,7 +79,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             finalize_cmd => {
                                 let transaction_id = transaction_state.transaction_id()?;
-                                client.finalize_transaction(transaction_id, finalize_cmd).await
+                                client.finalize_transaction(transaction_id, finalize_cmd).await?;
+                                transaction_state.clear();
+                                Ok(())
                             }
                         }
                     } else {
