@@ -47,6 +47,35 @@ impl CentralService {
 
         Ok(())
     }
+
+    fn check_has_lock(&self, trans_id: &TransactionId, record: &str) -> Option<AcquireLockResponse> {
+        let result = self.lock_tab.has_resource(&trans_id, record)
+            .map(|has| {
+                if has {
+                    let mut response = AcquireLockResponse {
+                        ret: 0,
+                        acquire_lock_payload: Some(AcquireLockPayload::Results(AcquireLockResults{ acquired: true })),
+                    };
+                    response.set_ret(ReturnStatus::Ok);
+                    Some(response)
+                } else {
+                    None
+                }
+            })
+            .map_err(|err| {
+                let mut response = AcquireLockResponse {
+                    ret: 0,
+                    acquire_lock_payload: Some(AcquireLockPayload::Error(err.into())),
+                };
+                response.set_ret(ReturnStatus::Error);
+                response
+            });
+
+        match result {
+            Ok(res) => res,
+            Err(err) => Some(err)
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -118,6 +147,11 @@ impl ConcurrencyControllerService for CentralService {
         let trans_id = TransactionId::new(acquire_lock_request.site_id, acquire_lock_request.transaction_id);
         info!("Transaction {} is trying to acquire lock for {}", trans_id, acquire_lock_request.record_name);
 
+        if let Some(existing_lock_response) = self.check_has_lock(&trans_id, &acquire_lock_request.record_name) {
+            info!("Transaction {} already has lock for {}", trans_id, acquire_lock_request.record_name);
+            return Ok(Response::new(existing_lock_response))
+        }
+
         let mut acquire_lock_response = AcquireLockResponse::default();
         let lock_result = self.lock_tab.acquire_lock(trans_id, &acquire_lock_request.record_name);
         if lock_result.is_err() {
@@ -141,7 +175,7 @@ impl ConcurrencyControllerService for CentralService {
         info!("Transaction {} is releasing lock for {}", trans_id, release_lock_request.record_name);
 
         let mut release_lock_response = ReleaseLockResponse::default();
-        let lock_result = self.lock_tab.acquire_lock(trans_id, &release_lock_request.record_name);
+        let lock_result = self.lock_tab.release_lock(trans_id, &release_lock_request.record_name);
         if lock_result.is_err() {
             let err = lock_result.unwrap_err();
             error!("Error while trying to release lock: {}", err);

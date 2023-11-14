@@ -29,6 +29,11 @@ impl LockTable {
         }
     }
 
+    pub fn has_resource(&self, transaction_id: &TransactionId, resource: &str) -> Result<bool, SddmsError> {
+        self.lock_set(transaction_id)
+            .map(|lock_set| lock_set.contains(resource))
+    }
+    
     pub fn register_transaction(&self, transaction_id: TransactionId) -> Result<(), SddmsError> {
         self.live_transactions.register_transaction(transaction_id)
     }
