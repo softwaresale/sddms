@@ -1,5 +1,5 @@
 [package]
-name = "sddms-site"
+name = "sddms-central"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,13 +7,12 @@ edition = "2021"
 
 [dependencies]
 sddms-shared = { path = '../sddms-shared' }
-sddms-services = { path = '../sddms-services', features = ["site-controller", 'central-controller'] }
+sddms-services = { path = '../sddms-services', features = ['site-controller', 'central-controller'] }
 clap = { version = "4.4.7", features = ["derive"] }
 env_logger = "0.10.0"
 log = "0.4.20"
 tonic = "0.10.2"
 prost = "0.12.1"
 tokio = { version =  "1.33.0", features = ["macros", "rt-multi-thread"] }
-sqlite = "0.32.0"
 serde = "1.0.192"
 serde_json = "1.0.108"

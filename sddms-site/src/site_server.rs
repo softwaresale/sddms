@@ -1,9 +1,7 @@
 use std::fmt::{Debug, Formatter};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
-use log::{debug, info};
-use sqlite::{Connection, ConnectionThreadSafe};
+use log::{debug, error, info};
+use sqlite::{Connection};
 use tonic::{Request, Response, Status};
 use sddms_services::shared::{ApiError, FinalizeMode, ReturnStatus};
 use sddms_services::site_controller::{BeginTransactionRequest, BeginTransactionResponse, BeginTransactionResults, FinalizeTransactionRequest, FinalizeTransactionResponse, FinalizeTransactionResults, InvokeQueryRequest, InvokeQueryResponse, InvokeQueryResults, ReplicationUpdateRequest, ReplicationUpdateResponse};
@@ -11,25 +9,28 @@ use sddms_services::site_controller::begin_transaction_response::BeginTransactio
 use sddms_services::site_controller::finalize_transaction_response::FinalizeTransactionPayload;
 use sddms_services::site_controller::invoke_query_response::InvokeQueryPayload;
 use sddms_services::site_controller::site_manager_service_server::SiteManagerService;
-use sddms_shared::error::SddmsError;
+use sddms_shared::error::{SddmsError, SddmsTermError};
+use crate::central_client::CentralClient;
 use crate::sqlite_row_serializer::serialize_row;
 
 pub struct SddmsSiteManagerService {
     db_path: PathBuf,
-    connection: ConnectionThreadSafe,
-    trans_id: Arc<AtomicU32>,
+    connection: tokio::sync::Mutex<Connection>,
+    cc_client: tokio::sync::Mutex<CentralClient>,
+    site_id: u32,
 }
 
 impl SddmsSiteManagerService {
-    pub fn new(path: &Path, db_conn: ConnectionThreadSafe) -> Self {
+    pub fn new(path: &Path, db_conn: Connection, cc_client: CentralClient, site_id: u32) -> Self {
         Self {
             db_path: PathBuf::from(path),
-            connection: db_conn,
-            trans_id: Arc::new(AtomicU32::new(0))
+            connection: tokio::sync::Mutex::new(db_conn),
+            cc_client: tokio::sync::Mutex::new(cc_client),
+            site_id
         }
     }
 
-    fn invoke_read_query(&self, query_text: &str) -> Result<InvokeQueryResults, SddmsError> {
+    async fn invoke_read_query(&self, query_text: &str) -> Result<InvokeQueryResults, SddmsError> {
 
         let sliced_query_text = if query_text.ends_with(";") {
             &query_text[0..query_text.len()-1]
@@ -38,7 +39,8 @@ impl SddmsSiteManagerService {
         };
 
         let mut results = InvokeQueryResults::default();
-        let statement = self.connection.prepare(sliced_query_text)
+        let connection = self.connection.lock().await;
+        let statement = connection.prepare(sliced_query_text)
             .map_err(|err| SddmsError::general("Failed to prepare query").with_cause(err))?;
 
         let col_names = statement.column_names().to_vec();
@@ -59,31 +61,76 @@ impl SddmsSiteManagerService {
         Ok(results)
     }
 
-    fn invoke_modify_query(&self, query_text: &str) -> Result<InvokeQueryResults, SddmsError> {
+    async fn invoke_modify_query(&self, query_text: &str) -> Result<InvokeQueryResults, SddmsError> {
         let mut results = InvokeQueryResults::default();
-        self.connection.execute(query_text)
+        let connection = self.connection.lock().await;
+        connection.execute(query_text)
             .map_err(|err| SddmsError::general("Failed to invoke SQL query").with_cause(err))?;
 
-        let affected_rows = self.connection.change_count() as u32;
+        let affected_rows = connection.change_count() as u32;
         results.affected_records = Some(affected_rows);
         info!("Updated {} rows", affected_rows);
         Ok(results)
     }
 
-    fn invoke_one_off_stmt(&self, query_text: &str) -> Result<(), SddmsError> {
-        self.connection.execute(query_text)
+    async fn invoke_one_off_stmt(&self, query_text: &str) -> Result<(), SddmsTermError> {
+        let connection = self.connection.lock().await;
+        connection.execute(query_text)
             .map_err(|err| SddmsError::general("Failed to execute one off SQL statement").with_cause(err))
+            .map_err(|sddms_err| SddmsTermError::from(sddms_err))
     }
-}
 
-impl Clone for SddmsSiteManagerService {
-    fn clone(&self) -> Self {
-        let new_connection = Connection::open_thread_safe(&self.db_path).unwrap();
-        Self {
-            db_path: self.db_path.clone(),
-            connection: new_connection,
-            trans_id: self.trans_id.clone(),
+    async fn register_transaction_with_cc(&self) -> Result<u32, BeginTransactionResponse> {
+
+        let result = {
+            let mut cc_client = self.cc_client.lock().await;
+            cc_client.register_transaction(self.site_id)
+                .await
+        };
+
+        match result {
+            Ok(trans_id) => { Ok(trans_id) }
+            Err(err) => {
+                let payload = BeginTransactionPayload::Error(err.into());
+                let mut response = BeginTransactionResponse::default();
+                response.set_ret(ReturnStatus::Error);
+                response.begin_transaction_payload = Some(payload);
+                Err(response)
+            }
         }
+    }
+
+    async fn acquire_table_lock(&self, trans_id: u32, table: &str) -> Result<(), InvokeQueryResponse> {
+        let mut cc_client = self.cc_client.lock().await;
+        cc_client.acquire_table_lock(self.site_id, trans_id, table)
+            .await
+            .map_err(|err| {
+                error!("Error while trying to acquire lock: {}", err);
+                let payload = InvokeQueryPayload::Error(err.into());
+                let mut response = InvokeQueryResponse {
+                    invoke_query_payload: Some(payload),
+                    ret: 0
+                };
+                response.set_ret(ReturnStatus::Error);
+                response
+            })
+    }
+
+    async fn finalize_transaction(&self, trans_id: u32, mode: FinalizeMode) -> Result<(), FinalizeTransactionResponse> {
+        let mut cc_client = self.cc_client.lock().await;
+        cc_client.finalize_transaction(self.site_id, trans_id, mode)
+            .await
+            .map_err(|err| {
+                error!("Error while finalizing transaction: {}", err);
+                let payload = FinalizeTransactionPayload::Error(err.into());
+                let mut response = FinalizeTransactionResponse {
+                    ret: 0,
+                    finalize_transaction_payload: Some(payload),
+                };
+                response.set_ret(ReturnStatus::Error);
+
+                response
+            })
     }
 }
 
@@ -97,7 +144,12 @@ impl Debug for SddmsSiteManagerService {
 impl SiteManagerService for SddmsSiteManagerService {
     async fn begin_transaction(&self, request: Request<BeginTransactionRequest>) -> Result<Response<BeginTransactionResponse>, Status> {
         info!("Got begin transaction request: {:?}", request.remote_addr());
-        let begin_trans_result = self.invoke_one_off_stmt("BEGIN TRANSACTION");
+        let register_trans_result = self.register_transaction_with_cc().await;
+        let Ok(trans_id) = register_trans_result else {
+            return Ok(Response::new(register_trans_result.unwrap_err()))
+        };
+
+        let begin_trans_result = self.invoke_one_off_stmt("BEGIN TRANSACTION").await;
         if begin_trans_result.is_err() {
             let err = begin_trans_result.unwrap_err();
             let api_error: ApiError = SddmsError::site("Failed to begin transaction")
@@ -109,11 +161,10 @@ impl SiteManagerService for SddmsSiteManagerService {
             response.begin_transaction_payload = Some(BeginTransactionPayload::Error(api_error));
             return Ok(Response::new(response));
         }
-
-        let trans_id = self.trans_id.fetch_add(1, Ordering::AcqRel);
         let mut response = BeginTransactionResponse::default();
         response.set_ret(ReturnStatus::Ok);
         response.begin_transaction_payload = Some(BeginTransactionPayload::Value(BeginTransactionResults { transaction_id: trans_id }));
+        info!("Successfully registered transaction {}", trans_id);
 
         Ok(Response::new(response))
     }
@@ -123,24 +174,31 @@ impl SiteManagerService for SddmsSiteManagerService {
         let invoke_request = request.into_inner();
         debug!("Got query: {}", invoke_request.query);
 
-        let invoke_results = if invoke_request.has_results {
-            self.invoke_read_query(&invoke_request.query)
+
+        // only acquire locks if in a transaction
+        if !invoke_request.single_stmt_transaction {
+            // first, try acquiring the lock
+            debug!("Acquiring lock for {:?}...", invoke_request.write_set);
+            for tab in &invoke_request.write_set {
+                let lock_result = self.acquire_table_lock(invoke_request.transaction_id, tab).await;
+                if let Err(lock_err) = lock_result {
+                    return Ok(Response::new(lock_err))
+                }
+            }
+            debug!("Successfully acquired lock");
         } else {
-            self.invoke_modify_query(&invoke_request.query)
+            debug!("Single transaction is running, skipping lock acquiring phase")
+        }
+
+        let invoke_results = if invoke_request.has_results {
+            self.invoke_read_query(&invoke_request.query).await
+        } else {
+            self.invoke_modify_query(&invoke_request.query).await
         }
             .map_err(|err| ApiError::from(err));
 
         let (ret, payload) = match invoke_results {
             Ok(results) => {
-
-                let record_count = if results.affected_records.is_some() {
-                    *results.affected_records.as_ref().unwrap() as usize
-                } else if results.data_payload.is_some() {
-                    results.data_payload.as_ref().unwrap().len()
-                } else {
-                    0usize
-                };
-                info!("{} records affected", record_count);
                 (ReturnStatus::Ok, InvokeQueryPayload::Results(results))
             }
             Err(err) => {
@@ -150,6 +208,7 @@ impl SiteManagerService for SddmsSiteManagerService {
         let mut response = InvokeQueryResponse::default();
         response.set_ret(ret);
         response.invoke_query_payload = Some(payload);
+        info!("Successfully invoked query");
 
         Ok(Response::new(response))
     }
@@ -157,7 +216,7 @@ impl SiteManagerService for SddmsSiteManagerService {
     async fn finalize_transaction(&self, request: Request<FinalizeTransactionRequest>) -> Result<Response<FinalizeTransactionResponse>, Status> {
         info!("Got finalize transaction: {:?}", request.remote_addr());
         let finalize_request = request.into_inner();
-        info!("Finalized transaction {} with mode {:?}", finalize_request.transaction_id, finalize_request.mode());
+        info!("Finalizing transaction {} with mode {:?}", finalize_request.transaction_id, finalize_request.mode());
         let finalize_query = match finalize_request.mode() {
             FinalizeMode::Unspecified => panic!("Unspecified commit method"),
             FinalizeMode::Commit => {
@@ -167,9 +226,9 @@ impl SiteManagerService for SddmsSiteManagerService {
                 "ROLLBACK"
             }
         };
-        let result = self.invoke_one_off_stmt(finalize_query);
-        if result.is_err() {
-            let err = result.unwrap_err();
+
+        let result = self.invoke_one_off_stmt(finalize_query).await;
+        if let Err(err) = result {
             let api_error: ApiError = SddmsError::site("Failed to finalize transaction")
                 .with_cause(err)
                 .into();
@@ -179,8 +238,21 @@ impl SiteManagerService for SddmsSiteManagerService {
             response.finalize_transaction_payload = Some(FinalizeTransactionPayload::Error(api_error));
             return Ok(Response::new(response));
         }
-        let mut response = FinalizeTransactionResponse::default();
-        response.finalize_transaction_payload = Some(FinalizeTransactionPayload::Results(FinalizeTransactionResults::default()));
+
+        // finalize the transaction in the CC
+        let finalize_result = self.finalize_transaction(finalize_request.transaction_id, finalize_request.mode()).await;
+        let response = match finalize_result {
+            Ok(_) => {
+                let mut response = FinalizeTransactionResponse::default();
+                response.finalize_transaction_payload = Some(FinalizeTransactionPayload::Results(FinalizeTransactionResults::default()));
+                info!("Successfully finalized transaction");
+                response
+            }
+            Err(err_response) => {
+                err_response
+            }
+        };
+
         Ok(Response::new(response))
     }
 

@@ -1,6 +1,6 @@
 use rustyline::{Editor, Helper};
 use rustyline::history::History;
-use regex::{Regex, RegexSet};
+use regex::{RegexSet};
 use sddms_shared::error::{SddmsError, SddmsResult};
 
 #[derive(Debug, Clone)]

@@ -13,11 +13,18 @@ message RegisterSiteRequest {
   uint32 port = 2;
 }
 
+message RegisterSiteResults {
+  uint32 site_id = 1;
+}
+
 message RegisterSiteResponse {
   // api return status
   sddms.shared.ReturnStatus ret = 1;
   // the site's newly created site id
-  uint32 site_id = 2;
+  oneof register_site_payload {
+    sddms.shared.ApiError error = 2;
+    RegisterSiteResults results = 3;
+  }
 }
 
 message RegisterTransactionRequest {
@@ -27,11 +34,18 @@ message RegisterTransactionRequest {
   optional string name = 2;
 }
 
+message RegisterTransactionResults {
+  // the newly created transaction's id
+  uint32 trans_id = 1;
+}
+
 message RegisterTransactionResponse {
   // api return status
   sddms.shared.ReturnStatus ret = 1;
-  // the newly created transaction's id
-  uint32 trans_id = 2;
+  oneof register_transaction_payload {
+    sddms.shared.ApiError error = 2;
+    RegisterTransactionResults results = 3;
+  }
 }
 
 enum LockMode {
@@ -51,11 +65,18 @@ message AcquireLockRequest {
   LockMode lock_mode = 4;
 }
 
+message AcquireLockResults {
+  // if the lock was successfully acquired??
+  bool acquired = 1;
+}
+
 message AcquireLockResponse {
   // API return status
   sddms.shared.ReturnStatus ret = 1;
-  // if the lock was successfully acquired??
-  bool acquired = 2;
+  oneof acquire_lock_payload {
+    sddms.shared.ApiError error = 2;
+    AcquireLockResults results = 3;
+  }
 }
 
 message ReleaseLockRequest {
@@ -67,11 +88,18 @@ message ReleaseLockRequest {
   string record_name = 3;
 }
 
+message ReleaseLockResults {
+  // if the lock was successfully released??
+  bool released = 1;
+}
+
 message ReleaseLockResponse {
   // API return status
   sddms.shared.ReturnStatus ret = 1;
-  // if the lock was successfully released??
-  bool released = 2;
+  oneof release_lock_payload {
+    sddms.shared.ApiError error = 2;
+    ReleaseLockResults results = 3;
+  }
 }
 
 message FinalizeTransactionRequest {
@@ -86,6 +114,7 @@ message FinalizeTransactionRequest {
 message FinalizeTransactionResponse {
   // API return status
   sddms.shared.ReturnStatus ret = 1;
+  optional sddms.shared.ApiError error = 2;
 }
 
 service ConcurrencyControllerService {
