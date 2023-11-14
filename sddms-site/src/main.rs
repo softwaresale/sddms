@@ -2,6 +2,7 @@ mod args;
 mod site_server;
 mod sqlite_row_serializer;
 mod central_client;
+mod client_connection_map;
 
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -40,7 +41,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let site_id = client.register_self("0.0.0.0", args.port).await?;
 
     // setup server
-    let service = SddmsSiteManagerService::new(&args.db_path, db, client, site_id);
+    let service = SddmsSiteManagerService::new(&args.db_path, client, site_id);
     let server = SiteManagerServiceServer::new(service);
 
     // start up the local site controller service
