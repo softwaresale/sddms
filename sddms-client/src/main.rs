@@ -71,7 +71,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Command::Lines(next_statements) => {
                 for stmt in &next_statements {
-                    let invoke_stmt_result = if let Some(transaction_stmt) = parse_transaction_stmt(stmt)? {
+                    let parse_attempt = parse_transaction_stmt(stmt);
+                    let Ok(transaction_stmt_opt) = parse_attempt else {
+                        eprintln!("{}", parse_attempt.unwrap_err());
+                        continue;
+                    };
+
+                    let invoke_stmt_result = if let Some(transaction_stmt) = transaction_stmt_opt {
                         match transaction_stmt {
                             TransactionStmt::Begin => {
                                 client.begin_transaction().await
@@ -87,6 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         invoke_query(&mut client, &transaction_state, stmt).await
                     };
+
 
                     if invoke_stmt_result.is_err() {
                         let err = invoke_stmt_result.unwrap_err();

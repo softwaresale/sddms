@@ -91,6 +91,7 @@ pub fn parse_statements(sql: &str) -> Result<Vec<SqlMetadata>, ParserError> {
     Ok(metadata)
 }
 
+#[derive(Debug)]
 pub enum TransactionStmt {
     Begin,
     Commit,
