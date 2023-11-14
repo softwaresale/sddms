@@ -43,6 +43,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // configure connection to site controller
     let mut client = SddmsSiteClient::connect(&args.connect_host).await?;
     info!("Connected to site client at {}", args.connect_host);
+    let client_id = client.register_self().await?;
+    client.set_client_id(client_id);
+    info!("Client successfully registered at site with id {}", client_id);
 
     let mut line_reader = DefaultEditor::new()?;
 

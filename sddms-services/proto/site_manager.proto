@@ -29,6 +29,8 @@ message RegisterClientResponse {
 message BeginTransactionRequest {
   // the optional name of the transaction
   optional string transaction_name = 1;
+  // the client making this request
+  uint32 client_id = 2;
 }
 
 message BeginTransactionResults {
@@ -56,6 +58,8 @@ message InvokeQueryRequest {
   bool has_results = 5;
   // true if the given query should be treated as a transaction with a single statement
   bool single_stmt_transaction = 6;
+  // the client making this request
+  uint32 client_id = 7;
 }
 
 message InvokeQueryResults {
@@ -79,6 +83,8 @@ message InvokeQueryResponse {
 message FinalizeTransactionRequest {
   sddms.shared.FinalizeMode mode = 1;
   uint32 transaction_id = 2;
+  // the client making this request
+  uint32 client_id = 3;
 }
 
 message FinalizeTransactionResults {

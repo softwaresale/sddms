@@ -2,9 +2,10 @@ use serde_json::{Map, Value};
 use tonic::transport::Channel;
 use sddms_services::shared::FinalizeMode;
 use sddms_services::site_controller::invoke_query_response::InvokeQueryPayload;
-use sddms_services::site_controller::{BeginTransactionRequest, FinalizeTransactionRequest, InvokeQueryRequest};
+use sddms_services::site_controller::{BeginTransactionRequest, FinalizeTransactionRequest, InvokeQueryRequest, RegisterClientRequest};
 use sddms_services::site_controller::begin_transaction_response::BeginTransactionPayload;
 use sddms_services::site_controller::finalize_transaction_response::FinalizeTransactionPayload;
+use sddms_services::site_controller::register_client_response::RegisterClientPayload;
 use sddms_services::site_controller::site_manager_service_client::SiteManagerServiceClient;
 use sddms_shared::error::SddmsError;
 use sddms_shared::sql_metadata::TransactionStmt;
@@ -12,13 +13,24 @@ use crate::query_results::{QueryResults, ResultsInfo};
 
 pub struct SddmsSiteClient {
     client: SiteManagerServiceClient<Channel>,
+    client_id: Option<u32>,
 }
 
 impl SddmsSiteClient {
     fn new(inner: SiteManagerServiceClient<Channel>) -> Self {
         Self {
-            client: inner
+            client: inner,
+            client_id: None
         }
+    }
+
+    pub fn set_client_id(&mut self, id: u32) {
+        self.client_id = Some(id);
+    }
+
+    #[inline]
+    fn client_id(&self) -> u32 {
+        self.client_id.unwrap()
     }
 
     pub async fn connect<ConnStrT: Into<String>>(conn_str: ConnStrT) -> Result<Self, SddmsError> {
@@ -30,8 +42,32 @@ impl SddmsSiteClient {
         Ok(Self::new(client))
     }
 
+    pub async fn register_self(&mut self) -> Result<u32, SddmsError> {
+        let request = RegisterClientRequest {
+            host: "".to_string(),
+            port: 0,
+        };
+
+        let response = self.client.register_client(request)
+            .await
+            .map_err(|err| SddmsError::client("Failed to connect to site controller").with_cause(err))
+            ?.into_inner();
+
+        match response.register_client_payload.unwrap() {
+            RegisterClientPayload::Error(err) => {
+                Err(err.into())
+            }
+            RegisterClientPayload::Results(results) => {
+                Ok(results.client_id)
+            }
+        }
+    }
+
     pub async fn begin_transaction(&mut self) -> Result<u32, SddmsError> {
-        let request = BeginTransactionRequest::default();
+        let request = BeginTransactionRequest {
+            transaction_name: None,
+            client_id: self.client_id()
+        };
         let response = self.client.begin_transaction(request).await
             .map_err(|err| SddmsError::client("Failed to invoke begin transaction request").with_cause(err))?;
 
@@ -48,7 +84,7 @@ impl SddmsSiteClient {
     }
 
     pub async fn invoke_query(&mut self, trans_id: Option<u32>, query: &str) -> Result<QueryResults, SddmsError> {
-        let request = Self::configure_request(trans_id, query)?;
+        let request = self.configure_request(trans_id, query)?;
         let response = self.client.invoke_query(request).await
             .map_err(|status| SddmsError::client(format!("Error while sending request: {} {}", status.code(), status.message())))?;
 
@@ -81,9 +117,12 @@ impl SddmsSiteClient {
 
     pub async fn finalize_transaction(&mut self, id: u32, mode: TransactionStmt) -> Result<(), SddmsError> {
         let finalize_mode = FinalizeMode::try_from(mode).unwrap();
-        let mut request = FinalizeTransactionRequest::default();
+        let mut request = FinalizeTransactionRequest {
+            mode: 0,
+            transaction_id: id,
+            client_id: self.client_id()
+        };
         request.set_mode(finalize_mode);
-        request.transaction_id = id;
         
         let response = self.client.finalize_transaction(request).await
             .map_err(|status| SddmsError::client(format!("Error while sending request: {} {}", status.code(), status.message())))?;
@@ -101,7 +140,7 @@ impl SddmsSiteClient {
         }
     }
 
-    fn configure_request(trans_id: Option<u32>, query: &str) -> Result<InvokeQueryRequest, SddmsError> {
+    fn configure_request(&self, trans_id: Option<u32>, query: &str) -> Result<InvokeQueryRequest, SddmsError> {
         let sql_statements = sddms_shared::sql_metadata::parse_statements(query)
             .map_err(|err| SddmsError::client("Failed to parse SQL query").with_cause(err))?;
 
@@ -125,6 +164,7 @@ impl SddmsSiteClient {
             read_set,
             write_set,
             single_stmt_transaction: single_stmt_trans,
+            client_id: self.client_id(),
         })
     }
 }
