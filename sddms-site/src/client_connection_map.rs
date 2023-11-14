@@ -2,25 +2,25 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use log::info;
-use sqlite::{ConnectionThreadSafe};
+use rusqlite::Connection;
 use sddms_services::site_controller::InvokeQueryResults;
 use sddms_shared::error::{SddmsError, SddmsTermError};
 use crate::sqlite_row_serializer::serialize_row;
 
 pub struct ClientConnection {
-    connection: ConnectionThreadSafe,
+    connection: tokio::sync::Mutex<Connection>,
     id: u32,
 }
 
 impl ClientConnection {
-    fn new(connection: ConnectionThreadSafe, id: u32) -> Self {
+    fn new(connection: Connection, id: u32) -> Self {
         Self {
-            connection,
+            connection: tokio::sync::Mutex::new(connection),
             id,
         }
     }
 
-    pub fn invoke_read_query(&self, query_text: &str) -> Result<InvokeQueryResults, SddmsError> {
+    pub async fn invoke_read_query(&self, query_text: &str) -> Result<InvokeQueryResults, SddmsError> {
 
         let sliced_query_text = if query_text.ends_with(";") {
             &query_text[0..query_text.len()-1]
@@ -29,16 +29,20 @@ impl ClientConnection {
         };
 
         let mut results = InvokeQueryResults::default();
-        let statement = self.connection.prepare(sliced_query_text)
+        let connection = self.connection.lock().await;
+        let mut statement = connection.prepare(sliced_query_text)
             .map_err(|err| SddmsError::general("Failed to prepare query").with_cause(err))?;
 
-        let col_names = statement.column_names().to_vec();
+        let col_names = statement.column_names().iter()
+            .map(|col_name| String::from(*col_name))
+            .collect::<Vec<_>>();
 
-        let serialized_rows = statement.into_iter()
-            .map(|row| {
-                let row = row.unwrap();
-                serialize_row(&row, &col_names)
+        let serialized_rows = statement
+            .query_map([], |row| {
+                Ok(serialize_row(&row, &col_names))
             })
+            .map_err(|err| SddmsError::site("Error while executing query").with_cause(err))
+            ?.filter_map(|result| result.ok())
             .collect::<Vec<_>>();
 
         info!("Read {} rows", serialized_rows.len());
@@ -47,23 +51,25 @@ impl ClientConnection {
             .map_err(|err| SddmsError::general("Failed to serialize record payload").with_cause(err))?;
 
         results.data_payload = Some(payload_results);
-        results.column_names = col_names;
+        results.column_names = col_names.into_iter().map(|column| String::from(column)).collect();
         Ok(results)
     }
 
-    pub fn invoke_modify_query(&self, query_text: &str) -> Result<InvokeQueryResults, SddmsError> {
+    pub async fn invoke_modify_query(&self, query_text: &str) -> Result<InvokeQueryResults, SddmsError> {
         let mut results = InvokeQueryResults::default();
-        self.connection.execute(query_text)
+        let connection = self.connection.lock().await;
+        connection.execute(query_text, ())
             .map_err(|err| SddmsError::general("Failed to invoke SQL query").with_cause(err))?;
 
-        let affected_rows = self.connection.change_count() as u32;
+        let affected_rows = connection.changes() as u32;
         results.affected_records = Some(affected_rows);
         info!("Updated {} rows", affected_rows);
         Ok(results)
     }
 
-    pub fn invoke_one_off_stmt(&self, query_text: &str) -> Result<(), SddmsTermError> {
-        self.connection.execute(query_text)
+    pub async fn invoke_one_off_stmt(&self, query_text: &str) -> Result<usize, SddmsTermError> {
+        let connection = self.connection.lock().await;
+        connection.execute(query_text, ())
             .map_err(|err| SddmsError::general("Failed to execute one off SQL statement").with_cause(err))
             .map_err(|sddms_err| SddmsTermError::from(sddms_err))
     }
@@ -86,7 +92,7 @@ impl ClientConnectionMap {
 
     pub fn open_connection(&mut self, db_path: &Path) -> Result<u32, SddmsError> {
         // open connection to database
-        let db_conn = sqlite::Connection::open_thread_safe(db_path)
+        let db_conn = rusqlite::Connection::open(db_path)
             .map_err(|err| SddmsError::site("Could not open database").with_cause(err))?;
 
         let next_id = self.next_client_id();

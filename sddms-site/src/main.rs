@@ -2,7 +2,7 @@ mod args;
 mod site_server;
 mod sqlite_row_serializer;
 mod central_client;
-mod client_connection;
+mod client_connection_map;
 
 use std::error::Error;
 use std::fs::File;
@@ -11,7 +11,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use clap::Parser;
 use log::{info, LevelFilter};
-use sqlite::Connection;
+use rusqlite::Connection;
 use tonic::transport::Server;
 use sddms_services::site_controller::site_manager_service_server::SiteManagerServiceServer;
 use sddms_shared::error::SddmsError;
@@ -21,7 +21,7 @@ use crate::site_server::SddmsSiteManagerService;
 
 fn configure_database(db_path: &Path, init_path: &Path) -> Result<Connection, SddmsError> {
 
-    let db = sqlite::open(db_path)
+    let db = rusqlite::Connection::open(db_path)
         .map_err(|err| SddmsError::site("Failed to connect to db").with_cause(err))?;
 
     let file = File::open(init_path)
@@ -31,7 +31,7 @@ fn configure_database(db_path: &Path, init_path: &Path) -> Result<Connection, Sd
         .read_to_string(&mut contents)
         .map_err(|err| SddmsError::general("Failed to read SQL contents").with_cause(err))?;
 
-    db.execute(contents)
+    db.execute(&contents, ())
         .map_err(|err| SddmsError::client("SQL error while initializing DB").with_cause(err))?;
 
     Ok(db)

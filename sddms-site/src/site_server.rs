@@ -1,8 +1,6 @@
 use std::fmt::{Debug, Formatter};
 use std::path::{Path, PathBuf};
 use log::{debug, error, info};
-use sqlite::{Connection, ConnectionThreadSafe};
-use tokio::sync::MutexGuard;
 use tonic::{Request, Response, Status};
 use sddms_services::shared::{ApiError, FinalizeMode, ReturnStatus};
 use sddms_services::site_controller::{BeginTransactionRequest, BeginTransactionResponse, BeginTransactionResults, FinalizeTransactionRequest, FinalizeTransactionResponse, FinalizeTransactionResults, InvokeQueryRequest, InvokeQueryResponse, InvokeQueryResults, RegisterClientRequest, RegisterClientResponse, RegisterClientResults, ReplicationUpdateRequest, ReplicationUpdateResponse};
@@ -11,10 +9,9 @@ use sddms_services::site_controller::finalize_transaction_response::FinalizeTran
 use sddms_services::site_controller::invoke_query_response::InvokeQueryPayload;
 use sddms_services::site_controller::register_client_response::RegisterClientPayload;
 use sddms_services::site_controller::site_manager_service_server::SiteManagerService;
-use sddms_shared::error::{SddmsError, SddmsTermError};
+use sddms_shared::error::{SddmsError};
 use crate::central_client::CentralClient;
 use crate::client_connection_map::ClientConnectionMap;
-use crate::sqlite_row_serializer::serialize_row;
 
 pub struct SddmsSiteManagerService {
     db_path: PathBuf,
@@ -138,7 +135,7 @@ impl SiteManagerService for SddmsSiteManagerService {
             .get_client_connection(client_id)
             .unwrap();
 
-        let begin_trans_result = client_connection.invoke_one_off_stmt("BEGIN TRANSACTION");
+        let begin_trans_result = client_connection.invoke_one_off_stmt("BEGIN TRANSACTION").await;
         if begin_trans_result.is_err() {
             let err = begin_trans_result.unwrap_err();
             let api_error: ApiError = SddmsError::site("Failed to begin transaction")
@@ -186,9 +183,9 @@ impl SiteManagerService for SddmsSiteManagerService {
             .unwrap();
 
         let invoke_results = if invoke_request.has_results {
-            client_connection.invoke_read_query(&invoke_request.query)
+            client_connection.invoke_read_query(&invoke_request.query).await
         } else {
-            client_connection.invoke_modify_query(&invoke_request.query)
+            client_connection.invoke_modify_query(&invoke_request.query).await
         }
             .map_err(|err| ApiError::from(err));
 
@@ -229,7 +226,7 @@ impl SiteManagerService for SddmsSiteManagerService {
             .get_client_connection(client_id)
             .unwrap();
 
-        let result = client_connection.invoke_one_off_stmt(finalize_query);
+        let result = client_connection.invoke_one_off_stmt(finalize_query).await;
         if let Err(err) = result {
             let api_error: ApiError = SddmsError::site("Failed to finalize transaction")
                 .with_cause(err)
