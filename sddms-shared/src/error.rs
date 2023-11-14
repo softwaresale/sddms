@@ -1,6 +1,5 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use tarpc::derive_serde;
 
 #[derive(Debug)]
 pub enum SddmsErrorCategory {
