@@ -26,8 +26,9 @@ impl CentralService {
         }
     }
 
-    fn release_all_locks(&self, trans_id: TransactionId) -> Result<(), FinalizeTransactionResponse> {
+    async fn release_all_locks(&self, trans_id: TransactionId) -> Result<(), FinalizeTransactionResponse> {
         let held_resources = self.lock_tab.lock_set(&trans_id)
+            .await
             .map_err(|err| {
                 let mut response = FinalizeTransactionResponse::default();
                 response.set_ret(ReturnStatus::Error);
@@ -37,6 +38,7 @@ impl CentralService {
 
         for resource in &held_resources {
             self.lock_tab.release_lock(trans_id, resource)
+                .await
                 .map_err(|err| {
                     let mut response = FinalizeTransactionResponse::default();
                     response.set_ret(ReturnStatus::Error);
@@ -48,8 +50,9 @@ impl CentralService {
         Ok(())
     }
 
-    fn check_has_lock(&self, trans_id: &TransactionId, record: &str) -> Option<AcquireLockResponse> {
+    async fn check_has_lock(&self, trans_id: &TransactionId, record: &str) -> Option<AcquireLockResponse> {
         let result = self.lock_tab.has_resource(&trans_id, record)
+            .await
             .map(|has| {
                 if has {
                     let mut response = AcquireLockResponse {
@@ -120,6 +123,7 @@ impl ConcurrencyControllerService for CentralService {
         let trans_id = self.trans_id_gen.next_trans_id(register_transaction_request.site_id);
 
         let register_transaction_result = self.lock_tab.register_transaction(trans_id)
+            .await
             .map_err(|err| {
                 error!("Error while registering transaction: {}", err); // TODO prob not the place for this
                 let mut response = RegisterTransactionResponse::default();
@@ -147,13 +151,13 @@ impl ConcurrencyControllerService for CentralService {
         let trans_id = TransactionId::new(acquire_lock_request.site_id, acquire_lock_request.transaction_id);
         info!("Transaction {} is trying to acquire lock for {}", trans_id, acquire_lock_request.record_name);
 
-        if let Some(existing_lock_response) = self.check_has_lock(&trans_id, &acquire_lock_request.record_name) {
+        if let Some(existing_lock_response) = self.check_has_lock(&trans_id, &acquire_lock_request.record_name).await {
             info!("Transaction {} already has lock for {}", trans_id, acquire_lock_request.record_name);
             return Ok(Response::new(existing_lock_response))
         }
 
         let mut acquire_lock_response = AcquireLockResponse::default();
-        let lock_result = self.lock_tab.acquire_lock(trans_id, &acquire_lock_request.record_name);
+        let lock_result = self.lock_tab.acquire_lock(trans_id, &acquire_lock_request.record_name).await;
         if lock_result.is_err() {
             let err = lock_result.unwrap_err();
             error!("Error while trying to acquire lock: {}", err);
@@ -175,7 +179,7 @@ impl ConcurrencyControllerService for CentralService {
         info!("Transaction {} is releasing lock for {}", trans_id, release_lock_request.record_name);
 
         let mut release_lock_response = ReleaseLockResponse::default();
-        let lock_result = self.lock_tab.release_lock(trans_id, &release_lock_request.record_name);
+        let lock_result = self.lock_tab.release_lock(trans_id, &release_lock_request.record_name).await;
         if lock_result.is_err() {
             let err = lock_result.unwrap_err();
             error!("Error while trying to release lock: {}", err);
@@ -197,12 +201,12 @@ impl ConcurrencyControllerService for CentralService {
         info!("Transaction {} is finalizing itself", trans_id);
 
         // Release all locks that this transaction currently holds
-        if let Err(unlock_err) = self.release_all_locks(trans_id) {
+        if let Err(unlock_err) = self.release_all_locks(trans_id).await {
             return Ok(Response::new(unlock_err))
         }
 
         // finalize the transaction
-        let finalize_result = self.lock_tab.finalize_transaction(trans_id);
+        let finalize_result = self.lock_tab.finalize_transaction(trans_id).await;
         match finalize_result {
             Ok(_) => {
                 let mut response = FinalizeTransactionResponse::default();
