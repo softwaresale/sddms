@@ -43,6 +43,8 @@ message InvokeQueryResults {
   optional bytes data_payload = 1;
   // how many records were affected by query, in lieu of payload data
   optional uint32 affected_records = 2;
+  // the names of each of the columns, if relevant
+  repeated string column_names = 3;
 }
 
 message InvokeQueryResponse {

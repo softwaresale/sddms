@@ -58,6 +58,7 @@ impl SddmsSiteManagerService {
             .map_err(|err| SddmsError::general("Failed to serialize record payload").with_cause(err))?;
 
         results.data_payload = Some(payload_results);
+        results.column_names = col_names;
         Ok(results)
     }
 

@@ -1,6 +1,7 @@
 use clap::Parser;
 use log::{info, LevelFilter};
 use rustyline::{DefaultEditor};
+use tabled::Table;
 use sddms_shared::error::SddmsError;
 use sddms_shared::sql_metadata::{parse_transaction_stmt, TransactionStmt};
 use crate::args::Args;
@@ -23,9 +24,8 @@ async fn invoke_query(client: &mut SddmsSiteClient, transaction_state: &Transact
     match results {
         QueryResults::AffectedRows(row_count) => println!("Affected {} rows", row_count),
         QueryResults::Results(results) => {
-            let payload = serde_json::to_string(&results)
-                .map_err(|err| SddmsError::client("Failed to serialize results").with_cause(err))?;
-            println!("{}", payload);
+            let table: Table = results.into();
+            println!("{}", table);
         }
     };
 

@@ -8,7 +8,7 @@ use sddms_services::site_controller::finalize_transaction_response::FinalizeTran
 use sddms_services::site_controller::site_manager_service_client::SiteManagerServiceClient;
 use sddms_shared::error::SddmsError;
 use sddms_shared::sql_metadata::TransactionStmt;
-use crate::query_results::QueryResults;
+use crate::query_results::{QueryResults, ResultsInfo};
 
 pub struct SddmsSiteClient {
     client: SiteManagerServiceClient<Channel>,
@@ -65,7 +65,10 @@ impl SddmsSiteClient {
                 } else if let Some(payload) = query_results.data_payload {
                     let objects: Vec<Map<String, Value>> = serde_json::from_slice(&payload)
                         .map_err(|err| SddmsError::general("Could not deserialize query result").with_cause(err))?;
-                    QueryResults::Results(objects)
+                    QueryResults::Results(ResultsInfo {
+                        results: objects,
+                        columns: query_results.column_names
+                    })
                 } else {
                     panic!("Nothing was specified")
                 };
