@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use tokio::sync::Notify;
 use sddms_shared::error::SddmsError;
 use crate::live_transaction_set::LiveTransactionSet;
 use crate::transaction_id::TransactionId;
@@ -7,8 +6,6 @@ use crate::transaction_id::TransactionId;
 pub struct LockTable {
     /// table of resources to be locked
     resources: tokio::sync::Mutex<HashMap<String, VecDeque<TransactionId>>>,
-    /// signals when a lock was released
-    released_cond: Notify,
     /// set of transactions that are currently live
     live_transactions: LiveTransactionSet,
 }
@@ -17,7 +14,6 @@ impl LockTable {
     pub fn new() -> Self {
         Self {
             resources: tokio::sync::Mutex::default(),
-            released_cond: Notify::new(),
             live_transactions: LiveTransactionSet::new(),
         }
     }
@@ -82,8 +78,6 @@ impl LockTable {
             if resources.get(resource).unwrap().front().unwrap().eq(&transaction_id) {
                 break;
             }
-
-            self.released_cond.notified().await;
         }
 
         // we got it finally
@@ -104,7 +98,6 @@ impl LockTable {
         }
 
         resource_vec.pop_front();
-        self.released_cond.notify_waiters();
         Ok(())
     }
 

@@ -74,7 +74,7 @@ impl CentralClient {
         };
         request.set_lock_mode(LockMode::Exclusive);
 
-        let response = self.client.acquire_lock(request)
+        let response = self.client.clone().acquire_lock(request)
             .await
             .map_err(|err| SddmsError::site("Failed to transport acquire lock request").with_cause(err))
             ?.into_inner();
@@ -99,7 +99,7 @@ impl CentralClient {
         };
         request.set_finalize_mode(mode);
 
-        let response = self.client.finalize_transaction(request)
+        let response = self.client.clone().finalize_transaction(request)
             .await
             .map_err(|err| SddmsError::site("Failed to transport finalize transaction request").with_cause(err))
             ?.into_inner();

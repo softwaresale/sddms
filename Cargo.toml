@@ -6,4 +6,5 @@ members = [
   "sddms-client",
   "sddms-site",
   "sddms-services",
+  "proxied-sqlite"
 ]

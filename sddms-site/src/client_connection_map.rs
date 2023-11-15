@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use log::info;
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use sddms_services::site_controller::InvokeQueryResults;
 use sddms_shared::error::{SddmsError, SddmsTermError};
 use crate::sqlite_row_serializer::serialize_row;
@@ -92,7 +92,7 @@ impl ClientConnectionMap {
 
     pub fn open_connection(&mut self, db_path: &Path) -> Result<u32, SddmsError> {
         // open connection to database
-        let db_conn = rusqlite::Connection::open(db_path)
+        let db_conn = Connection::open(db_path)
             .map_err(|err| SddmsError::site("Could not open database").with_cause(err))?;
 
         let next_id = self.next_client_id();
