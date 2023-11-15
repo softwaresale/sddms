@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use tokio::task::yield_now;
 use sddms_shared::error::SddmsError;
 use crate::live_transaction_set::LiveTransactionSet;
 use crate::transaction_id::TransactionId;
@@ -75,9 +76,13 @@ impl LockTable {
         // wait until we are at the front of the queue for the given resource
         loop {
             let resources = self.resources.lock().await;
-            if resources.get(resource).unwrap().front().unwrap().eq(&transaction_id) {
+            let resource_queue = resources.get(resource).unwrap();
+            let front_id = resource_queue.front().unwrap();
+            if front_id == &transaction_id {
                 break;
             }
+
+            yield_now().await;
         }
 
         // we got it finally
