@@ -35,11 +35,9 @@ impl LiveTransactionSet {
     }
 
     pub async fn remove(&self, trans: &TransactionId) -> Result<(), SddmsError> {
-        if !self.is_shrinking(trans).await {
-            return Err(SddmsError::central(format!("Transaction {} must be shrinking before it can be removed", trans)))
-        }
-
+        // just remove from the transaction set
         self.shrinking.write().await.remove(trans);
+        self.growing.write().await.remove(trans);
         Ok(())
     }
 
