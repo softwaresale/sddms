@@ -99,8 +99,10 @@ message FinalizeTransactionResponse {
 }
 
 message ReplicationUpdateRequest {
-  // the query to invoke
-  string query = 1;
+  // update statements to invoke
+  repeated string update_statements = 1;
+  // the site that this transaction came from
+  uint32 originating_site = 2;
 }
 
 message ReplicationUpdateResponse {

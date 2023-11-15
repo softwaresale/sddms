@@ -9,14 +9,18 @@ use sddms_services::site_controller::finalize_transaction_response::FinalizeTran
 use sddms_services::site_controller::invoke_query_response::InvokeQueryPayload;
 use sddms_services::site_controller::register_client_response::RegisterClientPayload;
 use sddms_services::site_controller::site_manager_service_server::SiteManagerService;
-use sddms_shared::error::{SddmsError};
+use sddms_shared::error::{SddmsError, SddmsTermError};
 use crate::central_client::CentralClient;
-use crate::client_connection_map::ClientConnectionMap;
+use crate::client_connection::ClientConnectionMap;
+use crate::transaction_history::{TransactionHistoryMap};
 
 pub struct SddmsSiteManagerService {
     db_path: PathBuf,
+    // TODO make this a RW lock -- 80% of time we're reading, and underlying connections
+    // are managed by mutexes as well
     client_connections: tokio::sync::Mutex<ClientConnectionMap>,
-    cc_client: tokio::sync::Mutex<CentralClient>,
+    cc_client: CentralClient,
+    transaction_history: tokio::sync::Mutex<TransactionHistoryMap>,
     site_id: u32,
 }
 
@@ -25,18 +29,15 @@ impl SddmsSiteManagerService {
         Self {
             db_path: PathBuf::from(path),
             client_connections: tokio::sync::Mutex::new(ClientConnectionMap::new()),
-            cc_client: tokio::sync::Mutex::new(cc_client),
+            cc_client,
+            transaction_history: tokio::sync::Mutex::default(),
             site_id
         }
     }
 
     async fn register_transaction_with_cc(&self) -> Result<u32, BeginTransactionResponse> {
 
-        let result = {
-            let mut cc_client = self.cc_client.lock().await;
-            cc_client.register_transaction(self.site_id)
-                .await
-        };
+        let result = self.cc_client.register_transaction(self.site_id).await;
 
         match result {
             Ok(trans_id) => { Ok(trans_id) }
@@ -51,8 +52,7 @@ impl SddmsSiteManagerService {
     }
 
     async fn acquire_table_lock(&self, trans_id: u32, table: &str) -> Result<(), InvokeQueryResponse> {
-        let mut cc_client = self.cc_client.lock().await;
-        cc_client.acquire_table_lock(self.site_id, trans_id, table)
+        self.cc_client.acquire_table_lock(self.site_id, trans_id, table)
             .await
             .map_err(|err| {
                 error!("Error while trying to acquire lock: {}", err);
@@ -67,8 +67,8 @@ impl SddmsSiteManagerService {
     }
 
     async fn finalize_transaction(&self, trans_id: u32, mode: FinalizeMode) -> Result<(), FinalizeTransactionResponse> {
-        let mut cc_client = self.cc_client.lock().await;
-        cc_client.finalize_transaction(self.site_id, trans_id, mode)
+        // TODO can't decide this
+        self.cc_client.finalize_transaction(self.site_id, trans_id, mode)
             .await
             .map_err(|err| {
                 error!("Error while finalizing transaction: {}", err);
@@ -81,6 +81,54 @@ impl SddmsSiteManagerService {
 
                 response
             })
+    }
+
+    async fn push_transaction_for_client(&self, client_id: u32, trans_id: u32) {
+        let mut transaction_history = self.transaction_history.lock().await;
+        transaction_history.push_transaction(client_id, trans_id)
+    }
+
+    async fn push_update_command(&self, client_id: u32, trans_id: u32, cmd: &str) {
+        let mut transaction_history = self.transaction_history.lock().await;
+        transaction_history.get_transaction_for_client_mut(client_id, trans_id).unwrap()
+            .push(cmd)
+    }
+
+    async fn execute_query_on_db(&self, client_id: u32, invoke_request: &InvokeQueryRequest) -> Result<InvokeQueryResults, ApiError> {
+        // get the connection for the given client
+        let connection_map_lock = self.client_connections.lock().await;
+        let client_connection = connection_map_lock
+            .get_client_connection(client_id)
+            .unwrap();
+
+        if invoke_request.has_results {
+            client_connection.invoke_read_query(&invoke_request.query).await
+        } else {
+            debug!("Saving update command from client_id={}, trans_id={}: {}", client_id, invoke_request.transaction_id, &invoke_request.query);
+            self.push_update_command(client_id, invoke_request.transaction_id, &invoke_request.query).await;
+            client_connection.invoke_modify_query(&invoke_request.query).await
+        }
+            .map_err(|err| ApiError::from(err))
+    }
+
+    async fn replicate_local_transaction(&self, client_connection_map: &mut ClientConnectionMap, client_id: u32, transaction_id: u32) -> Result<(), SddmsTermError> {
+
+        // TODO need to spill this to the local database
+
+        // get the transaction history
+        let transaction_history = {
+            self.transaction_history.lock().await.remove_transaction(client_id, transaction_id)
+                .ok_or(SddmsError::site(format!("No transaction for client_id={}, transaction_id={}", client_id, transaction_id)).into())
+                .map_err(|err: SddmsError| SddmsTermError::from(err))?
+        };
+
+        // apply it to the connection map
+        self.replicate_remote_transaction(client_connection_map, &transaction_history, Some(client_id)).await
+    }
+
+    async fn replicate_remote_transaction(&self, connection_map: &mut ClientConnectionMap, stmts: &[String], skip: Option<u32>) -> Result<(), SddmsTermError> {
+        connection_map.replicate_messages(stmts, skip).await
+            .map_err(|err| SddmsTermError::from(err))
     }
 }
 
@@ -129,6 +177,9 @@ impl SiteManagerService for SddmsSiteManagerService {
             return Ok(Response::new(register_trans_result.unwrap_err()))
         };
 
+        // register that we are starting a new transaction
+        self.push_transaction_for_client(client_id, trans_id).await;
+
         // get the connection for the given client
         let connection_map_lock = self.client_connections.lock().await;
         let client_connection = connection_map_lock
@@ -176,18 +227,8 @@ impl SiteManagerService for SddmsSiteManagerService {
             debug!("Single transaction is running, skipping lock acquiring phase")
         }
 
-        // get the connection for the given client
-        let connection_map_lock = self.client_connections.lock().await;
-        let client_connection = connection_map_lock
-            .get_client_connection(client_id)
-            .unwrap();
-
-        let invoke_results = if invoke_request.has_results {
-            client_connection.invoke_read_query(&invoke_request.query).await
-        } else {
-            client_connection.invoke_modify_query(&invoke_request.query).await
-        }
-            .map_err(|err| ApiError::from(err));
+        // actually execute the results
+        let invoke_results = self.execute_query_on_db(client_id, &invoke_request).await;
 
         let (ret, payload) = match invoke_results {
             Ok(results) => {
@@ -221,13 +262,32 @@ impl SiteManagerService for SddmsSiteManagerService {
         };
 
         // get the connection for the given client
-        let connection_map_lock = self.client_connections.lock().await;
+        debug!("Acquiring connection pool lock...");
+        let mut connection_map_lock = self.client_connections.lock().await;
         let client_connection = connection_map_lock
             .get_client_connection(client_id)
             .unwrap();
+        debug!("Acquired");
 
+        debug!("Invoking query finalization statement...");
         let result = client_connection.invoke_one_off_stmt(finalize_query).await;
         if let Err(err) = result {
+            error!("Error while finalizing transaction query: {}", err);
+            let api_error: ApiError = SddmsError::site("Failed to finalize transaction")
+                .with_cause(err)
+                .into();
+
+            let mut response = FinalizeTransactionResponse::default();
+            response.set_ret(ReturnStatus::Error);
+            response.finalize_transaction_payload = Some(FinalizeTransactionPayload::Error(api_error));
+            return Ok(Response::new(response));
+        }
+        debug!("Invoked");
+
+        // replicate the transaction locally
+        let replicate_result = self.replicate_local_transaction(&mut connection_map_lock, client_id, finalize_request.transaction_id).await;
+        if let Err(err) = replicate_result {
+            error!("Error while replicating query: {}", err);
             let api_error: ApiError = SddmsError::site("Failed to finalize transaction")
                 .with_cause(err)
                 .into();
@@ -239,6 +299,7 @@ impl SiteManagerService for SddmsSiteManagerService {
         }
 
         // finalize the transaction in the CC
+        debug!("Finalizing transaction with CC...");
         let finalize_result = self.finalize_transaction(finalize_request.transaction_id, finalize_request.mode()).await;
         let response = match finalize_result {
             Ok(_) => {
@@ -256,6 +317,8 @@ impl SiteManagerService for SddmsSiteManagerService {
     }
 
     async fn replication_update(&self, request: Request<ReplicationUpdateRequest>) -> Result<Response<ReplicationUpdateResponse>, Status> {
+        info!("Got finalize transaction: {:?}", request.remote_addr());
+        let replicate_update_request = request.into_inner();
         todo!()
     }
 }
