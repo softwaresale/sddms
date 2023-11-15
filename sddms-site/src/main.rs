@@ -2,7 +2,8 @@ mod args;
 mod site_server;
 mod sqlite_row_serializer;
 mod central_client;
-mod client_connection_map;
+mod client_connection;
+mod transaction_history;
 
 use std::error::Error;
 use std::fs::File;
@@ -56,7 +57,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // establish connection with central server
-    let mut client = CentralClient::new(&args.cc_addr).await?;
+    let client = CentralClient::new(&args.cc_addr).await?;
     let site_id = client.register_self("0.0.0.0", args.port).await?;
 
     info!("Site registered with concurrency controller");

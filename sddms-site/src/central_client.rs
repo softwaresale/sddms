@@ -1,3 +1,4 @@
+use log::debug;
 use tonic::transport::Channel;
 use sddms_services::central_controller::concurrency_controller_service_client::ConcurrencyControllerServiceClient;
 use sddms_services::central_controller::register_site_response::RegisterSitePayload;
@@ -23,13 +24,13 @@ impl CentralClient {
         })
     }
 
-    pub async fn register_self(&mut self, ip: &str, port: u16) -> Result<u32, SddmsError> {
+    pub async fn register_self(&self, ip: &str, port: u16) -> Result<u32, SddmsError> {
         let register_request = RegisterSiteRequest {
             host: ip.to_string(),
             port: port as u32,
         };
 
-        let response = self.client.register_site(register_request)
+        let response = self.client.clone().register_site(register_request)
             .await
             .map_err(|err| SddmsError::site("Failed to transport register site request").with_cause(err))
             ?.into_inner();
@@ -44,13 +45,13 @@ impl CentralClient {
         }
     }
 
-    pub async fn register_transaction(&mut self, site_id: u32) -> Result<u32, SddmsError> {
+    pub async fn register_transaction(&self, site_id: u32) -> Result<u32, SddmsError> {
         let request = RegisterTransactionRequest {
             site_id,
             name: None,
         };
 
-        let response = self.client.register_transaction(request)
+        let response = self.client.clone().register_transaction(request)
             .await
             .map_err(|err| SddmsError::site("Failed to transport register site request").with_cause(err))
             ?.into_inner();
@@ -65,7 +66,7 @@ impl CentralClient {
         }
     }
 
-    pub async fn acquire_table_lock(&mut self, site_id: u32, transaction_id: u32, table: &str) -> Result<(), SddmsError> {
+    pub async fn acquire_table_lock(&self, site_id: u32, transaction_id: u32, table: &str) -> Result<(), SddmsError> {
         let mut request = AcquireLockRequest {
             site_id,
             transaction_id,
@@ -91,7 +92,7 @@ impl CentralClient {
         }
     }
 
-    pub async fn finalize_transaction(&mut self, site_id: u32, trans_id: u32, mode: FinalizeMode) -> Result<(), SddmsError> {
+    pub async fn finalize_transaction(&self, site_id: u32, trans_id: u32, mode: FinalizeMode) -> Result<(), SddmsError> {
         let mut request = FinalizeTransactionRequest {
             site_id,
             transaction_id: trans_id,
@@ -99,10 +100,12 @@ impl CentralClient {
         };
         request.set_finalize_mode(mode);
 
+        debug!("Sending finalize transaction request...");
         let response = self.client.clone().finalize_transaction(request)
             .await
             .map_err(|err| SddmsError::site("Failed to transport finalize transaction request").with_cause(err))
             ?.into_inner();
+        debug!("Received finalize response");
 
         match response.error {
             Some(api_err) => {
