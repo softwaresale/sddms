@@ -67,7 +67,7 @@ impl SddmsSiteManagerService {
             })
     }
 
-    async fn finalize_transaction(&self, trans_id: u32, mode: FinalizeMode) -> Result<(), FinalizeTransactionResponse> {
+    async fn finalize_transaction_cc(&self, trans_id: u32, mode: FinalizeMode) -> Result<(), FinalizeTransactionResponse> {
         // TODO can't decide this
         self.cc_client.finalize_transaction(self.site_id, trans_id, mode)
             .await
@@ -95,7 +95,7 @@ impl SddmsSiteManagerService {
             .push(cmd)
     }
 
-    async fn execute_query_on_db(&self, client_id: u32, invoke_request: &InvokeQueryRequest) -> Result<InvokeQueryResults, ApiError> {
+    async fn execute_query_on_db(&self, client_id: u32, transaction_id: u32, invoke_request: &InvokeQueryRequest) -> Result<InvokeQueryResults, ApiError> {
         // get the connection for the given client
         let connection_map_lock = self.client_connections.lock().await;
         let client_connection = connection_map_lock
@@ -105,8 +105,8 @@ impl SddmsSiteManagerService {
         if invoke_request.has_results {
             client_connection.invoke_read_query(&invoke_request.query).await
         } else {
-            debug!("Saving update command from client_id={}, trans_id={}: {}", client_id, invoke_request.transaction_id, &invoke_request.query);
-            self.push_update_command(client_id, invoke_request.transaction_id, &invoke_request.query).await;
+            debug!("Saving update command from client_id={}, trans_id={}: {}", client_id, transaction_id, &invoke_request.query);
+            self.push_update_command(client_id, transaction_id, &invoke_request.query).await;
             client_connection.invoke_modify_query(&invoke_request.query).await
         }
             .map_err(|err| ApiError::from(err))
@@ -147,6 +147,42 @@ impl SddmsSiteManagerService {
     async fn replicate_remote_transaction(&self, connection_map: &mut ClientConnectionMap, stmts: &[String], skip: Option<u32>) -> Result<(), SddmsTermError> {
         connection_map.replicate_messages(stmts, skip).await
             .map_err(|err| SddmsTermError::from(err))
+    }
+
+    async fn provision_single_stmt_transaction(&self) -> Result<u32, InvokeQueryResponse> {
+        self.cc_client.register_transaction(self.site_id)
+            .await
+            .map_err(|err| {
+                error!("Failed to register temporary transaction: {}", err);
+                ApiError::from(err)
+            })
+            .map_err(|err| InvokeQueryPayload::Error(err))
+            .map_err(|err_payload| {
+                let mut response = InvokeQueryResponse::default();
+                response.set_ret(ReturnStatus::Error);
+                response.invoke_query_payload = Some(err_payload);
+                response
+            })
+    }
+
+    async fn finalize_single_stmt_transaction(&self, client_id: u32, trans_id: u32) -> Result<(), InvokeQueryPayload> {
+        let mut client_connections = self.client_connections.lock().await;
+
+        self.replicate_local_transaction(&mut client_connections, client_id, trans_id)
+            .await
+            .map_err(|err| {
+                error!("Error while finalizing single transaction: {}", err);
+                let sddms_err: SddmsError = err.into();
+                let api_err: ApiError = sddms_err.into();
+                InvokeQueryPayload::Error(api_err)
+            })?;
+
+        self.cc_client.finalize_transaction(self.site_id, trans_id, FinalizeMode::Commit)
+            .await
+            .map_err(|err| {
+                error!("Error while finalizing single transaction: {}", err);
+                InvokeQueryPayload::Error(err.into())
+            })
     }
 }
 
@@ -231,31 +267,61 @@ impl SiteManagerService for SddmsSiteManagerService {
         let client_id = invoke_request.client_id;
 
         // only acquire locks if in a transaction
-        if !invoke_request.single_stmt_transaction {
-            // first, try acquiring the lock
-            debug!("Acquiring lock for {:?}...", invoke_request.write_set);
-            for tab in &invoke_request.write_set {
-                let lock_result = self.acquire_table_lock(invoke_request.transaction_id, tab).await;
-                if let Err(lock_err) = lock_result {
-                    return Ok(Response::new(lock_err))
+        let transaction_id = if invoke_request.single_stmt_transaction {
+            info!("Provisioning transaction for single stmt");
+            let result = self.provision_single_stmt_transaction().await;
+            match result {
+                Ok(id) => {
+                    info!("Provisioned temporary transaction with id {}", id);
+                    self.push_transaction_for_client(client_id, id).await;
+                    id
+                }
+                Err(response) => {
+                    return Ok(Response::new(response))
                 }
             }
-            debug!("Successfully acquired lock");
         } else {
-            debug!("Single transaction is running, skipping lock acquiring phase")
+            invoke_request.transaction_id
+        };
+
+        // try acquiring the lock
+        debug!("Acquiring lock for {:?}...", invoke_request.write_set);
+        for tab in &invoke_request.write_set {
+            let lock_result = self.acquire_table_lock(transaction_id, tab).await;
+            if let Err(lock_err) = lock_result {
+                return Ok(Response::new(lock_err))
+            }
         }
+        debug!("Successfully acquired lock");
+
 
         // actually execute the results
-        let invoke_results = self.execute_query_on_db(client_id, &invoke_request).await;
+        let invoke_results = self.execute_query_on_db(client_id, transaction_id, &invoke_request).await;
+        // check for failure and return if it did
+        if let Err(err) = invoke_results {
+            let mut response = InvokeQueryResponse::default();
+            response.set_ret(ReturnStatus::Error);
+            response.invoke_query_payload = Some(InvokeQueryPayload::Error(err));
+            return Ok(Response::new(response));
+        }
 
-        let (ret, payload) = match invoke_results {
-            Ok(results) => {
-                (ReturnStatus::Ok, InvokeQueryPayload::Results(results))
+        let results = invoke_results.unwrap();
+
+        // finalize the transaction as well
+        let (ret, payload) = if invoke_request.single_stmt_transaction {
+            let finalize_result = self.finalize_single_stmt_transaction(client_id, transaction_id).await;
+            match finalize_result {
+                Ok(_) => {
+                    (ReturnStatus::Ok, InvokeQueryPayload::Results(results))
+                }
+                Err(err) => {
+                    (ReturnStatus::Error, err)
+                }
             }
-            Err(err) => {
-                (ReturnStatus::Error, InvokeQueryPayload::Error(err))
-            }
+        } else {
+            (ReturnStatus::Ok, InvokeQueryPayload::Results(results))
         };
+
         let mut response = InvokeQueryResponse::default();
         response.set_ret(ret);
         response.invoke_query_payload = Some(payload);
@@ -320,7 +386,7 @@ impl SiteManagerService for SddmsSiteManagerService {
 
         // finalize the transaction in the CC
         debug!("Finalizing transaction with CC...");
-        let finalize_result = self.finalize_transaction(finalize_request.transaction_id, finalize_request.mode()).await;
+        let finalize_result = self.finalize_transaction_cc(finalize_request.transaction_id, finalize_request.mode()).await;
         let response = match finalize_result {
             Ok(_) => {
                 let mut response = FinalizeTransactionResponse::default();
