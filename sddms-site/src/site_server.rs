@@ -1,6 +1,7 @@
 use std::fmt::{Debug, Formatter};
 use std::path::{Path, PathBuf};
 use log::{debug, error, info};
+use rusqlite::Connection;
 use tonic::{Request, Response, Status};
 use sddms_services::shared::{ApiError, FinalizeMode, ReturnStatus};
 use sddms_services::site_controller::{BeginTransactionRequest, BeginTransactionResponse, BeginTransactionResults, FinalizeTransactionRequest, FinalizeTransactionResponse, FinalizeTransactionResults, InvokeQueryRequest, InvokeQueryResponse, InvokeQueryResults, RegisterClientRequest, RegisterClientResponse, RegisterClientResults, ReplicationUpdateRequest, ReplicationUpdateResponse};
@@ -11,7 +12,7 @@ use sddms_services::site_controller::register_client_response::RegisterClientPay
 use sddms_services::site_controller::site_manager_service_server::SiteManagerService;
 use sddms_shared::error::{SddmsError, SddmsTermError};
 use crate::central_client::CentralClient;
-use crate::client_connection::ClientConnectionMap;
+use crate::client_connection::{ClientConnectionMap};
 use crate::transaction_history::{TransactionHistoryMap};
 
 pub struct SddmsSiteManagerService {
@@ -112,9 +113,6 @@ impl SddmsSiteManagerService {
     }
 
     async fn replicate_local_transaction(&self, client_connection_map: &mut ClientConnectionMap, client_id: u32, transaction_id: u32) -> Result<(), SddmsTermError> {
-
-        // TODO need to spill this to the local database
-
         // get the transaction history
         let transaction_history = {
             self.transaction_history.lock().await.remove_transaction(client_id, transaction_id)
@@ -122,8 +120,28 @@ impl SddmsSiteManagerService {
                 .map_err(|err: SddmsError| SddmsTermError::from(err))?
         };
 
+        // apply it to the local database
+        self.replicate_on_disk(&transaction_history).await?;
+
         // apply it to the connection map
         self.replicate_remote_transaction(client_connection_map, &transaction_history, Some(client_id)).await
+    }
+
+    async fn replicate_on_disk(&self, stmts: &[String]) -> Result<(), SddmsTermError> {
+        let mut disk_connection = Connection::open(&self.db_path)
+            .map_err(|err| SddmsError::site("Failed to open disk database").with_cause(err))?;
+
+        let transaction = disk_connection.transaction()
+            .map_err(|err| SddmsError::site("Failed to open replication txn on disk").with_cause(err))?;
+
+        for stmt in stmts {
+            transaction.execute(stmt, [])
+                .map_err(|err| SddmsError::site("Failed to execute update stmt").with_cause(err))?;
+        }
+
+        transaction.commit()
+            .map_err(|err| SddmsError::site("Failed to commit replication transaction on disk").with_cause(err))
+            .map_err(|err| SddmsTermError::from(err))
     }
 
     async fn replicate_remote_transaction(&self, connection_map: &mut ClientConnectionMap, stmts: &[String], skip: Option<u32>) -> Result<(), SddmsTermError> {
@@ -284,18 +302,20 @@ impl SiteManagerService for SddmsSiteManagerService {
         }
         debug!("Invoked");
 
-        // replicate the transaction locally
-        let replicate_result = self.replicate_local_transaction(&mut connection_map_lock, client_id, finalize_request.transaction_id).await;
-        if let Err(err) = replicate_result {
-            error!("Error while replicating query: {}", err);
-            let api_error: ApiError = SddmsError::site("Failed to finalize transaction")
-                .with_cause(err)
-                .into();
+        // replicate the transaction locally if commit, do nothing if abort
+        if let FinalizeMode::Commit = finalize_request.mode() {
+            let replicate_result = self.replicate_local_transaction(&mut connection_map_lock, client_id, finalize_request.transaction_id).await;
+            if let Err(err) = replicate_result {
+                error!("Error while replicating query: {}", err);
+                let api_error: ApiError = SddmsError::site("Failed to finalize transaction")
+                    .with_cause(err)
+                    .into();
 
-            let mut response = FinalizeTransactionResponse::default();
-            response.set_ret(ReturnStatus::Error);
-            response.finalize_transaction_payload = Some(FinalizeTransactionPayload::Error(api_error));
-            return Ok(Response::new(response));
+                let mut response = FinalizeTransactionResponse::default();
+                response.set_ret(ReturnStatus::Error);
+                response.finalize_transaction_payload = Some(FinalizeTransactionPayload::Error(api_error));
+                return Ok(Response::new(response));
+            }
         }
 
         // finalize the transaction in the CC
