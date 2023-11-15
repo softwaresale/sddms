@@ -105,6 +105,12 @@ impl From<SddmsError> for SddmsTermError {
     }
 }
 
+impl Into<SddmsError> for SddmsTermError {
+    fn into(self) -> SddmsError {
+        SddmsError::new(self.category, self.message)
+    }
+}
+
 impl Display for SddmsTermError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!("{}: {}", self.category, self.message))
