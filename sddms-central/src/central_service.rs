@@ -200,6 +200,21 @@ impl ConcurrencyControllerService for CentralService {
         let trans_id = TransactionId::new(finalize_request.site_id, finalize_request.transaction_id);
         info!("Transaction {} is finalizing itself", trans_id);
 
+        // send replication message to all sites
+        // TODO pull this block into its own function
+        let replication_error = self.connections.replicate_sites(&finalize_request.update_history, finalize_request.site_id)
+            .await
+            .err();
+
+        if let Some(rep_err) = replication_error {
+            error!("Error while replicating transaction: {}", rep_err);
+            let api_err: ApiError = ApiError::from(rep_err);
+            let mut response = FinalizeTransactionResponse::default();
+            response.set_ret(ReturnStatus::Error);
+            response.error = Some(api_err);
+            return Ok(Response::new(response));
+        }
+
         // Release all locks that this transaction currently holds
         if let Err(unlock_err) = self.release_all_locks(trans_id).await {
             return Ok(Response::new(unlock_err))

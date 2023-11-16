@@ -4,6 +4,7 @@ mod lock_table;
 mod connection_pool;
 mod transaction_id;
 mod live_transaction_set;
+mod site_client;
 
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
