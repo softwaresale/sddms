@@ -30,10 +30,7 @@ impl CentralService {
         let held_resources = self.lock_tab.lock_set(&trans_id)
             .await
             .map_err(|err| {
-                let mut response = FinalizeTransactionResponse::default();
-                response.set_ret(ReturnStatus::Error);
-                response.error = Some(err.into());
-                response
+                FinalizeTransactionResponse::from(err)
             })?;
 
         for resource in &held_resources {
@@ -66,12 +63,7 @@ impl CentralService {
                 }
             })
             .map_err(|err| {
-                let mut response = AcquireLockResponse {
-                    ret: 0,
-                    acquire_lock_payload: Some(AcquireLockPayload::Error(err.into())),
-                };
-                response.set_ret(ReturnStatus::Error);
-                response
+                AcquireLockResponse::from(err)
             });
 
         match result {
@@ -106,11 +98,7 @@ impl ConcurrencyControllerService for CentralService {
             }
             Err(api_err) => {
                 error!("Failed to register site: {} - {}", api_err.message, api_err.description);
-                let mut response = RegisterSiteResponse::default();
-                let results = RegisterSitePayload::Error(api_err);
-                response.set_ret(ReturnStatus::Ok);
-                response.register_site_payload = Some(results);
-                response
+                RegisterSiteResponse::from(api_err)
             }
         };
 
@@ -126,10 +114,7 @@ impl ConcurrencyControllerService for CentralService {
             .await
             .map_err(|err| {
                 error!("Error while registering transaction: {}", err); // TODO prob not the place for this
-                let mut response = RegisterTransactionResponse::default();
-                response.set_ret(ReturnStatus::Error);
-                response.register_transaction_payload = Some(RegisterTransactionPayload::Error(err.into()));
-                response
+                RegisterTransactionResponse::from(err)
             });
 
         let Ok(()) = register_transaction_result else {
@@ -156,17 +141,15 @@ impl ConcurrencyControllerService for CentralService {
             return Ok(Response::new(existing_lock_response))
         }
 
-        let mut acquire_lock_response = AcquireLockResponse::default();
         let lock_result = self.lock_tab.acquire_lock(trans_id, &acquire_lock_request.record_name).await;
         if lock_result.is_err() {
             let err = lock_result.unwrap_err();
             error!("Error while trying to acquire lock: {}", err);
-            acquire_lock_response.set_ret(ReturnStatus::Error);
-            let payload = AcquireLockPayload::Error(err.into());
-            acquire_lock_response.acquire_lock_payload = Some(payload);
-            return Ok(Response::new(acquire_lock_response));
+            let err_response = AcquireLockResponse::from(err);
+            return Ok(Response::new(err_response));
         }
 
+        let mut acquire_lock_response = AcquireLockResponse::default();
         acquire_lock_response.set_ret(ReturnStatus::Ok);
         acquire_lock_response.acquire_lock_payload = Some(AcquireLockPayload::Results(AcquireLockResults { acquired: true }));
         info!("{} successfully locked {}", trans_id, acquire_lock_request.record_name);
@@ -178,17 +161,15 @@ impl ConcurrencyControllerService for CentralService {
         let trans_id = TransactionId::new(release_lock_request.site_id, release_lock_request.transaction_id);
         info!("Transaction {} is releasing lock for {}", trans_id, release_lock_request.record_name);
 
-        let mut release_lock_response = ReleaseLockResponse::default();
         let lock_result = self.lock_tab.release_lock(trans_id, &release_lock_request.record_name).await;
         if lock_result.is_err() {
             let err = lock_result.unwrap_err();
             error!("Error while trying to release lock: {}", err);
-            release_lock_response.set_ret(ReturnStatus::Error);
-            let payload = ReleaseLockPayload::Error(err.into());
-            release_lock_response.release_lock_payload = Some(payload);
-            return Ok(Response::new(release_lock_response));
+            let response = ReleaseLockResponse::from(err);
+            return Ok(Response::new(response));
         }
 
+        let mut release_lock_response = ReleaseLockResponse::default();
         release_lock_response.set_ret(ReturnStatus::Ok);
         release_lock_response.release_lock_payload = Some(ReleaseLockPayload::Results(ReleaseLockResults { released: true }));
         info!("{} released lock for {}", trans_id, release_lock_request.record_name);
@@ -208,10 +189,7 @@ impl ConcurrencyControllerService for CentralService {
 
         if let Some(rep_err) = replication_error {
             error!("Error while replicating transaction: {}", rep_err);
-            let api_err: ApiError = ApiError::from(rep_err);
-            let mut response = FinalizeTransactionResponse::default();
-            response.set_ret(ReturnStatus::Error);
-            response.error = Some(api_err);
+            let response = FinalizeTransactionResponse::from(rep_err);
             return Ok(Response::new(response));
         }
 
@@ -231,9 +209,7 @@ impl ConcurrencyControllerService for CentralService {
             }
             Err(err) => {
                 error!("Error while finalizing transaction: {}", err);
-                let mut response = FinalizeTransactionResponse::default();
-                response.set_ret(ReturnStatus::Error);
-                response.error = Some(err.into());
+                let response = FinalizeTransactionResponse::from(err);
                 Ok(Response::new(response))
             }
         }

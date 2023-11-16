@@ -38,18 +38,8 @@ impl SddmsSiteManagerService {
 
     async fn register_transaction_with_cc(&self) -> Result<u32, BeginTransactionResponse> {
 
-        let result = self.cc_client.register_transaction(self.site_id).await;
-
-        match result {
-            Ok(trans_id) => { Ok(trans_id) }
-            Err(err) => {
-                let payload = BeginTransactionPayload::Error(err.into());
-                let mut response = BeginTransactionResponse::default();
-                response.set_ret(ReturnStatus::Error);
-                response.begin_transaction_payload = Some(payload);
-                Err(response)
-            }
-        }
+        self.cc_client.register_transaction(self.site_id).await
+            .map_err(|err| err.into())
     }
 
     async fn acquire_table_lock(&self, trans_id: u32, table: &str) -> Result<(), InvokeQueryResponse> {
@@ -57,13 +47,7 @@ impl SddmsSiteManagerService {
             .await
             .map_err(|err| {
                 error!("Error while trying to acquire lock: {}", err);
-                let payload = InvokeQueryPayload::Error(err.into());
-                let mut response = InvokeQueryResponse {
-                    invoke_query_payload: Some(payload),
-                    ret: 0
-                };
-                response.set_ret(ReturnStatus::Error);
-                response
+                err.into()
             })
     }
 
@@ -78,7 +62,7 @@ impl SddmsSiteManagerService {
             .push(cmd)
     }
 
-    async fn execute_query_on_db(&self, client_id: u32, transaction_id: u32, invoke_request: &InvokeQueryRequest) -> Result<InvokeQueryResults, ApiError> {
+    async fn execute_query_on_db(&self, client_id: u32, transaction_id: u32, invoke_request: &InvokeQueryRequest) -> Result<InvokeQueryResults, SddmsTermError> {
         // get the connection for the given client
         let connection_map_lock = self.client_connections.lock().await;
         let client_connection = connection_map_lock
@@ -87,12 +71,20 @@ impl SddmsSiteManagerService {
 
         if invoke_request.has_results {
             client_connection.invoke_read_query(&invoke_request.query).await
+                .map_err(|err| SddmsTermError::from(err))
         } else {
             debug!("Saving update command from client_id={}, trans_id={}: {}", client_id, transaction_id, &invoke_request.query);
-            self.push_update_command(client_id, transaction_id, &invoke_request.query).await;
-            client_connection.invoke_modify_query(&invoke_request.query).await
+            let invoke_result = client_connection.invoke_modify_query(&invoke_request.query).await;
+            match invoke_result {
+                Ok(query_result) => {
+                    self.push_update_command(client_id, transaction_id, &invoke_request.query).await;
+                    Ok(query_result)
+                }
+                Err(sddms_error) => {
+                    Err(SddmsTermError::from(sddms_error))
+                }
+            }
         }
-            .map_err(|err| ApiError::from(err))
     }
 
     async fn replicate_local_transaction(&self, client_connection_map: &mut ClientConnectionMap, client_id: u32, stmts: &[String]) -> Result<(), SddmsTermError> {
@@ -129,14 +121,7 @@ impl SddmsSiteManagerService {
             .await
             .map_err(|err| {
                 error!("Failed to register temporary transaction: {}", err);
-                ApiError::from(err)
-            })
-            .map_err(|err| InvokeQueryPayload::Error(err))
-            .map_err(|err_payload| {
-                let mut response = InvokeQueryResponse::default();
-                response.set_ret(ReturnStatus::Error);
-                response.invoke_query_payload = Some(err_payload);
-                response
+                err.into()
             })
     }
 
@@ -219,14 +204,7 @@ impl SiteManagerService for SddmsSiteManagerService {
         let begin_trans_result = client_connection.invoke_one_off_stmt("BEGIN TRANSACTION").await;
         if begin_trans_result.is_err() {
             let err = begin_trans_result.unwrap_err();
-            let api_error: ApiError = SddmsError::site("Failed to begin transaction")
-                .with_cause(err)
-                .into();
-
-            let mut response = BeginTransactionResponse::default();
-            response.set_ret(ReturnStatus::Error);
-            response.begin_transaction_payload = Some(BeginTransactionPayload::Error(api_error));
-            return Ok(Response::new(response));
+            return Ok(Response::new(BeginTransactionResponse::from(err)));
         }
         let mut response = BeginTransactionResponse::default();
         response.set_ret(ReturnStatus::Ok);
@@ -275,9 +253,7 @@ impl SiteManagerService for SddmsSiteManagerService {
         let invoke_results = self.execute_query_on_db(client_id, transaction_id, &invoke_request).await;
         // check for failure and return if it did
         if let Err(err) = invoke_results {
-            let mut response = InvokeQueryResponse::default();
-            response.set_ret(ReturnStatus::Error);
-            response.invoke_query_payload = Some(InvokeQueryPayload::Error(err));
+            let response = InvokeQueryResponse::from(err);
             return Ok(Response::new(response));
         }
 
@@ -337,13 +313,7 @@ impl SiteManagerService for SddmsSiteManagerService {
             let result = client_connection.invoke_one_off_stmt(finalize_query).await;
             if let Err(err) = result {
                 error!("Error while finalizing transaction query: {}", err);
-                let api_error: ApiError = SddmsError::site("Failed to finalize transaction")
-                    .with_cause(err)
-                    .into();
-
-                let mut response = FinalizeTransactionResponse::default();
-                response.set_ret(ReturnStatus::Error);
-                response.finalize_transaction_payload = Some(FinalizeTransactionPayload::Error(api_error));
+                let response = FinalizeTransactionResponse::from(err);
                 return Ok(Response::new(response));
             }
             debug!("Invoked");
@@ -374,45 +344,30 @@ impl SiteManagerService for SddmsSiteManagerService {
         let mut connections = self.client_connections.lock().await;
         let replication_error = self.replicate_to_clients(&mut connections, &replicate_update_request.update_statements, None)
             .await
-            .map_err(|err| {
-                error!("Error while performing replication request: {}", err);
-                let err: SddmsError = err.into();
-                ApiError::from(err)
-            })
             .err();
 
         if let Some(error) = replication_error {
-            let mut response = ReplicationUpdateResponse {
-                ret: 0,
-                error: Some(error)
-            };
-            response.set_ret(ReturnStatus::Error);
+            error!("Error occurred while replicating transaction to clients: {}", error);
+            let response = ReplicationUpdateResponse::from(error);
             return Ok(Response::new(response));
         }
 
         let disk_replication_err = self.replicate_on_disk(&replicate_update_request.update_statements)
             .await
-            .map_err(|err| {
-                error!("Error while performing replication request: {}", err);
-                let err: SddmsError = err.into();
-                ApiError::from(err)
-            })
             .err();
 
 
-        let ret = if disk_replication_err.is_some() {
-            ReturnStatus::Error
+        let response = if disk_replication_err.is_some() {
+            let err = disk_replication_err.unwrap();
+            error!("Error while performing replication request: {}", err);
+            ReplicationUpdateResponse::from(err)
         } else {
             info!("Successfully replicated database on site");
-            ReturnStatus::Ok
+            let mut response = ReplicationUpdateResponse::default();
+            response.set_ret(ReturnStatus::Ok);
+            response.error = None;
+            response
         };
-
-        let mut response = ReplicationUpdateResponse {
-            ret: 0,
-            error: replication_error
-        };
-
-        response.set_ret(ret);
 
         Ok(Response::new(response))
     }

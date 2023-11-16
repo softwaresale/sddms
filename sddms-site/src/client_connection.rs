@@ -57,7 +57,7 @@ impl ClientConnection {
         Ok(results)
     }
 
-    pub async fn invoke_modify_query(&self, query_text: &str) -> Result<InvokeQueryResults, SddmsError> {
+    pub async fn invoke_modify_query(&self, query_text: &str) -> Result<InvokeQueryResults, SddmsTermError> {
         let mut results = InvokeQueryResults::default();
         let connection = self.connection.lock().await;
         connection.execute(query_text, ())
