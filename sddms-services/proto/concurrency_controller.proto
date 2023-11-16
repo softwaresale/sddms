@@ -109,6 +109,8 @@ message FinalizeTransactionRequest {
   uint32 transaction_id = 2;
   // how we are finalizing: abort/commit
   sddms.shared.FinalizeMode finalize_mode = 3;
+  /// the update history of this transaction, used for replication
+  repeated string update_history = 4;
 }
 
 message FinalizeTransactionResponse {

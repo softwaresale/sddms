@@ -108,6 +108,8 @@ message ReplicationUpdateRequest {
 message ReplicationUpdateResponse {
   // the return status
   sddms.shared.ReturnStatus ret = 1;
+  // error message
+  optional sddms.shared.ApiError error = 2;
 }
 
 service SiteManagerService {
