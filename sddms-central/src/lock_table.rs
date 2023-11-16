@@ -70,6 +70,9 @@ impl LockTable {
         // if resource doesn't exist, add it
         self.add_new_resource(resource).await;
 
+        // check if this will cause deadlock
+        self.detect_deadlock(transaction_id, resource).await?;
+
         // get in the queue for the given resource
         self.enqueue_resource(transaction_id, resource).await?;
 
@@ -113,5 +116,39 @@ impl LockTable {
 
         resource_queue.push_back(transaction_id);
         Ok(())
+    }
+
+    pub async fn detect_deadlock(&self, transaction_id: TransactionId, resource: &str) -> Result<(), SddmsError> {
+        // get the lock set of the given transaction
+        let locked_resources = self.lock_set(&transaction_id).await?;
+
+        // get the set of transactions that are before this transaction for the given resource
+        let resources = self.resources.lock().await;
+        let desired_resource_waiters = resources.get(resource).unwrap();
+
+        // for each locked resource...
+        for resource in locked_resources {
+            // ... see what resources are waiting on the resources we own...
+            let owned_resource_waiters = self.resource_waiters(&resources, &resource).await;
+
+            // ... and if any of them are in line before us for the resource we desire ...
+            for waiter in desired_resource_waiters {
+                if owned_resource_waiters.contains(waiter) {
+                    // ... then we will cause a deadlock
+                    let err = SddmsError::central(format!("Transaction {} will deadlock system if it locks {}", transaction_id, resource));
+                    return Err(err)
+                }
+            }
+        }
+
+        // ...otherwise we will not cause a deadlock
+        Ok(())
+    }
+
+    async fn resource_waiters<'resource_map>(&self, resource_map: &'resource_map HashMap<String, VecDeque<TransactionId>>, resource: &str) -> HashSet<&'resource_map TransactionId> {
+        let waiters = resource_map.get(resource).unwrap();
+        waiters.iter()
+            .skip(1)
+            .collect::<HashSet<_>>()
     }
 }
