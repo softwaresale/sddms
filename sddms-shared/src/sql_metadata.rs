@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use sqlparser::ast::{SetExpr, Statement};
+use sqlparser::ast::{Query, SetExpr, Statement};
 use sqlparser::dialect::SQLiteDialect;
 use sqlparser::parser::{Parser, ParserError};
 use crate::error::SddmsError;
@@ -23,6 +23,25 @@ impl SqlMetadata {
 
     pub fn has_results(&self) -> bool {
         self.has_results
+    }
+}
+
+fn extract_tables_from_query(query: Box<Query>) -> Vec<String> {
+    let query_body = query.body;
+    match *query_body {
+        SetExpr::Select(select) => {
+            select.from.into_iter()
+                .map(|table| table.relation.to_string())
+                .collect::<Vec<_>>()
+        }
+        SetExpr::Query(_query) => {
+            vec![]
+        }
+        SetExpr::SetOperation { .. } => { vec![] }
+        SetExpr::Values(_) => { vec![] }
+        SetExpr::Insert(_) => { vec![] }
+        SetExpr::Update(_) => { vec![] }
+        SetExpr::Table(table) => { vec![table.table_name.unwrap_or_default()] }
     }
 }
 
@@ -51,26 +70,26 @@ impl From<Statement> for SqlMetadata {
                 }
             }
             Statement::Query(query) => {
-                let query_body = query.body;
-                let tables = match *query_body {
-                    SetExpr::Select(select) => {
-                        select.from.into_iter()
-                            .map(|table| table.relation.to_string())
-                            .collect::<Vec<_>>()
-                    }
-                    SetExpr::Query(_query) => {
-                        vec![]
-                    }
-                    SetExpr::SetOperation { .. } => { vec![] }
-                    SetExpr::Values(_) => { vec![] }
-                    SetExpr::Insert(_) => { vec![] }
-                    SetExpr::Update(_) => { vec![] }
-                    SetExpr::Table(table) => { vec![table.table_name.unwrap_or_default()] }
-                };
+                let tables = extract_tables_from_query(query);
                 SqlMetadata {
                     modifiable: false,
                     tables: HashSet::from_iter(tables.into_iter()),
                     has_results: true,
+                }
+            }
+
+            // TODO lock the table that's created too
+            Statement::CreateTable { query , .. } => {
+                let read_tables = if let Some(query) = query {
+                    extract_tables_from_query(query)
+                } else {
+                    vec![]
+                };
+
+                SqlMetadata {
+                    modifiable: false,
+                    tables: HashSet::from_iter(read_tables.into_iter()),
+                    has_results: false
                 }
             }
 

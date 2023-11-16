@@ -94,7 +94,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         invoke_query(&mut client, &transaction_state, stmt).await
                     };
 
-
                     if invoke_stmt_result.is_err() {
                         let err = invoke_stmt_result.unwrap_err();
                         eprintln!("{err}");
