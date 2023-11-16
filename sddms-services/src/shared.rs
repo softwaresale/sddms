@@ -1,5 +1,5 @@
 use tonic::include_proto;
-use sddms_shared::error::SddmsError;
+use sddms_shared::error::{SddmsError, SddmsTermError};
 use sddms_shared::sql_metadata::TransactionStmt;
 
 include_proto!("sddms.shared");
@@ -15,6 +15,15 @@ impl From<SddmsError> for ApiError {
         api_error.message = message;
         api_error.description = description;
         api_error
+    }
+}
+
+impl From<SddmsTermError> for ApiError {
+    fn from(value: SddmsTermError) -> Self {
+        let mut err = ApiError::default();
+        err.message = value.message().to_string();
+        err.description = format!("{}", value);
+        err
     }
 }
 

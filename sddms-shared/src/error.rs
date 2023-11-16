@@ -95,6 +95,15 @@ pub struct SddmsTermError {
     message: String,
 }
 
+impl SddmsTermError {
+    pub fn category(&self) -> &SddmsErrorCategory {
+        &self.category
+    }
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
 impl From<SddmsError> for SddmsTermError {
     fn from(value: SddmsError) -> Self {
         let message = format!("{}", &value);
