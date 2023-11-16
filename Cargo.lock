@@ -1059,22 +1059,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxied-sqlite"
-version = "0.1.0"
-dependencies = [
- "clap",
- "env_logger",
- "log",
- "regex",
- "rusqlite",
- "rustyline",
- "sddms-shared",
- "serde",
- "serde_json",
- "tabled",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1172,7 +1156,6 @@ dependencies = [
  "fallible-streaming-iterator",
  "hashlink",
  "libsqlite3-sys",
- "serde_json",
  "smallvec",
 ]
 
