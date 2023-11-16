@@ -36,8 +36,33 @@ impl LockTable {
         self.live_transactions.register_transaction(transaction_id).await
     }
 
+    // removes any pending lock requests and remove the transaction from the live transaction set
     pub async fn finalize_transaction(&self, transaction_id: TransactionId) -> Result<(), SddmsError> {
+        self.remove_all_lock_requests(&transaction_id).await?;
         self.live_transactions.remove(&transaction_id).await
+    }
+
+    async fn remove_all_lock_requests(&self, transaction_id: &TransactionId) -> Result<(), SddmsError> {
+        let mut resources = self.resources.lock().await;
+        for (_, lock_requests) in resources.iter_mut() {
+            // TODO There should probably only be one, so we could potentially use find_first or something
+            let request_indices = lock_requests.iter()
+                .enumerate()
+                .filter_map(|(idx, txn_id)| {
+                    if txn_id == transaction_id {
+                        Some(idx)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            for idx in request_indices {
+                lock_requests.remove(idx);
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn transaction_exists(&self, transaction_id: &TransactionId) -> bool {
