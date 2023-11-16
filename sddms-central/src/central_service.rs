@@ -8,7 +8,7 @@ use sddms_services::central_controller::register_transaction_response::RegisterT
 use sddms_services::central_controller::release_lock_response::ReleaseLockPayload;
 use sddms_services::shared::{ApiError, ReturnStatus};
 use crate::connection_pool::ConnectionPool;
-use crate::lock_table::LockTable;
+use crate::lock_table::{LockTable};
 use crate::transaction_id::{TransactionId, TransactionIdGenerator};
 
 pub struct CentralService {
@@ -45,31 +45,6 @@ impl CentralService {
         }
 
         Ok(())
-    }
-
-    async fn check_has_lock(&self, trans_id: &TransactionId, record: &str) -> Option<AcquireLockResponse> {
-        let result = self.lock_tab.has_resource(&trans_id, record)
-            .await
-            .map(|has| {
-                if has {
-                    let mut response = AcquireLockResponse {
-                        ret: 0,
-                        acquire_lock_payload: Some(AcquireLockPayload::Results(AcquireLockResults{ acquired: true })),
-                    };
-                    response.set_ret(ReturnStatus::Ok);
-                    Some(response)
-                } else {
-                    None
-                }
-            })
-            .map_err(|err| {
-                AcquireLockResponse::from(err)
-            });
-
-        match result {
-            Ok(res) => res,
-            Err(err) => Some(err)
-        }
     }
 }
 
@@ -134,26 +109,26 @@ impl ConcurrencyControllerService for CentralService {
     async fn acquire_lock(&self, request: Request<AcquireLockRequest>) -> Result<Response<AcquireLockResponse>, Status> {
         let acquire_lock_request = request.into_inner();
         let trans_id = TransactionId::new(acquire_lock_request.site_id, acquire_lock_request.transaction_id);
-        info!("Transaction {} is trying to acquire lock for {}", trans_id, acquire_lock_request.record_name);
+        info!("Transaction {} is trying to acquire lock for {} in {:?} mode", trans_id, acquire_lock_request.record_name, acquire_lock_request.lock_mode());
 
-        if let Some(existing_lock_response) = self.check_has_lock(&trans_id, &acquire_lock_request.record_name).await {
-            info!("Transaction {} already has lock for {}", trans_id, acquire_lock_request.record_name);
-            return Ok(Response::new(existing_lock_response))
-        }
+        let lock_result = self.lock_tab.acquire_lock(trans_id, &acquire_lock_request.record_name, acquire_lock_request.lock_mode()).await;
 
-        let lock_result = self.lock_tab.acquire_lock(trans_id, &acquire_lock_request.record_name).await;
-        if lock_result.is_err() {
-            let err = lock_result.unwrap_err();
-            error!("Error while trying to acquire lock: {}", err);
-            let err_response = AcquireLockResponse::from(err);
-            return Ok(Response::new(err_response));
-        }
+        let response = match lock_result {
+            Ok(result) => {
+                let mut acquire_lock_response = AcquireLockResponse::default();
+                acquire_lock_response.set_ret(ReturnStatus::Ok);
+                acquire_lock_response.acquire_lock_payload = Some(AcquireLockPayload::Results(AcquireLockResults { acquired: true }));
+                info!("{} successfully locked {}: {}", trans_id, acquire_lock_request.record_name, result);
+                acquire_lock_response
+            }
+            Err(err) => {
+                error!("Error while trying to acquire lock: {}", err);
+                let err_response = AcquireLockResponse::from(err);
+                err_response
+            }
+        };
 
-        let mut acquire_lock_response = AcquireLockResponse::default();
-        acquire_lock_response.set_ret(ReturnStatus::Ok);
-        acquire_lock_response.acquire_lock_payload = Some(AcquireLockPayload::Results(AcquireLockResults { acquired: true }));
-        info!("{} successfully locked {}", trans_id, acquire_lock_request.record_name);
-        Ok(Response::new(acquire_lock_response))
+        Ok(Response::new(response))
     }
 
     async fn release_lock(&self, request: Request<ReleaseLockRequest>) -> Result<Response<ReleaseLockResponse>, Status> {

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use sddms_shared::error::SddmsError;
 use crate::transaction_id::TransactionId;
 
+#[derive(Debug)]
 pub struct LiveTransactionSet {
     growing: tokio::sync::RwLock<HashSet<TransactionId>>,
     shrinking: tokio::sync::RwLock<HashSet<TransactionId>>,
