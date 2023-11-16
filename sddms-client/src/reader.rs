@@ -1,11 +1,12 @@
-use rustyline::{Editor, Helper};
 use rustyline::history::History;
 use regex::{RegexSet};
+use rustyline::{Editor, Helper};
 use sddms_shared::error::{SddmsError, SddmsResult};
 
 #[derive(Debug, Clone)]
 pub enum MetaCommand {
-    Quit
+    Quit,
+    PrintTransactionInfo,
 }
 
 impl MetaCommand {
@@ -19,11 +20,13 @@ impl TryFrom<&str> for MetaCommand {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let meta_command = RegexSet::new([
-            r#"\\q(uit)?"#
+            r#"\\q(uit)?"#,
+            r#"\\txn"#
         ]).unwrap();
 
         let commands = vec![
             MetaCommand::Quit,
+            MetaCommand::PrintTransactionInfo,
         ];
 
         let result = meta_command.matches(value).iter()

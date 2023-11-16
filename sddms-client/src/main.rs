@@ -66,7 +66,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match next_statements {
             Command::Meta(meta_command) => {
                 match meta_command {
-                    MetaCommand::Quit => break
+                    MetaCommand::Quit => break,
+                    MetaCommand::PrintTransactionInfo => {
+                        if transaction_state.has_transaction() {
+                            println!("client_id={}", client_id);
+                            println!("transaction_id={}", transaction_state.transaction_id().unwrap());
+                        } else {
+                            println!("No transaction in progress");
+                        }
+                    }
                 }
             }
             Command::Lines(next_statements) => {
