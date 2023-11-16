@@ -92,11 +92,12 @@ impl CentralClient {
         }
     }
 
-    pub async fn finalize_transaction(&self, site_id: u32, trans_id: u32, mode: FinalizeMode) -> Result<(), SddmsError> {
+     pub async fn finalize_transaction(&self, site_id: u32, trans_id: u32, mode: FinalizeMode, update_commands: &[String]) -> Result<(), SddmsError> {
         let mut request = FinalizeTransactionRequest {
             site_id,
             transaction_id: trans_id,
             finalize_mode: 0,
+            update_history: update_commands.to_vec()
         };
         request.set_finalize_mode(mode);
 

@@ -67,23 +67,6 @@ impl SddmsSiteManagerService {
             })
     }
 
-    async fn finalize_transaction_cc(&self, trans_id: u32, mode: FinalizeMode) -> Result<(), FinalizeTransactionResponse> {
-        // TODO can't decide this
-        self.cc_client.finalize_transaction(self.site_id, trans_id, mode)
-            .await
-            .map_err(|err| {
-                error!("Error while finalizing transaction: {}", err);
-                let payload = FinalizeTransactionPayload::Error(err.into());
-                let mut response = FinalizeTransactionResponse {
-                    ret: 0,
-                    finalize_transaction_payload: Some(payload),
-                };
-                response.set_ret(ReturnStatus::Error);
-
-                response
-            })
-    }
-
     async fn push_transaction_for_client(&self, client_id: u32, trans_id: u32) {
         let mut transaction_history = self.transaction_history.lock().await;
         transaction_history.push_transaction(client_id, trans_id)
@@ -112,19 +95,11 @@ impl SddmsSiteManagerService {
             .map_err(|err| ApiError::from(err))
     }
 
-    async fn replicate_local_transaction(&self, client_connection_map: &mut ClientConnectionMap, client_id: u32, transaction_id: u32) -> Result<(), SddmsTermError> {
-        // get the transaction history
-        let transaction_history = {
-            self.transaction_history.lock().await.remove_transaction(client_id, transaction_id)
-                .ok_or(SddmsError::site(format!("No transaction for client_id={}, transaction_id={}", client_id, transaction_id)).into())
-                .map_err(|err: SddmsError| SddmsTermError::from(err))?
-        };
-
+    async fn replicate_local_transaction(&self, client_connection_map: &mut ClientConnectionMap, client_id: u32, stmts: &[String]) -> Result<(), SddmsTermError> {
         // apply it to the local database
-        self.replicate_on_disk(&transaction_history).await?;
-
+        self.replicate_on_disk(stmts).await?;
         // apply it to the connection map
-        self.replicate_remote_transaction(client_connection_map, &transaction_history, Some(client_id)).await
+        self.replicate_to_clients(client_connection_map, stmts, Some(client_id)).await
     }
 
     async fn replicate_on_disk(&self, stmts: &[String]) -> Result<(), SddmsTermError> {
@@ -144,7 +119,7 @@ impl SddmsSiteManagerService {
             .map_err(|err| SddmsTermError::from(err))
     }
 
-    async fn replicate_remote_transaction(&self, connection_map: &mut ClientConnectionMap, stmts: &[String], skip: Option<u32>) -> Result<(), SddmsTermError> {
+    async fn replicate_to_clients(&self, connection_map: &mut ClientConnectionMap, stmts: &[String], skip: Option<u32>) -> Result<(), SddmsTermError> {
         connection_map.replicate_messages(stmts, skip).await
             .map_err(|err| SddmsTermError::from(err))
     }
@@ -165,24 +140,25 @@ impl SddmsSiteManagerService {
             })
     }
 
-    async fn finalize_single_stmt_transaction(&self, client_id: u32, trans_id: u32) -> Result<(), InvokeQueryPayload> {
-        let mut client_connections = self.client_connections.lock().await;
+    async fn replicate_and_finalize(&self, client_id: u32, trans_id: u32, mode: FinalizeMode) -> Result<(), SddmsTermError> {
+        // Get the history of what to replicate
+        let mut history = self.transaction_history.lock().await;
+        let transaction_history = history.remove_transaction(client_id, trans_id).unwrap();
 
-        self.replicate_local_transaction(&mut client_connections, client_id, trans_id)
-            .await
-            .map_err(|err| {
-                error!("Error while finalizing single transaction: {}", err);
-                let sddms_err: SddmsError = err.into();
-                let api_err: ApiError = sddms_err.into();
-                InvokeQueryPayload::Error(api_err)
-            })?;
+        // replicate locally if commit
+        if let FinalizeMode::Commit = mode {
+            debug!("Replicating to local transactions...");
+            let mut client_connections = self.client_connections.lock().await;
+            self.replicate_local_transaction(&mut client_connections, client_id, &transaction_history).await?;
+            debug!("Replicated local transaction");
+        }
 
-        self.cc_client.finalize_transaction(self.site_id, trans_id, FinalizeMode::Commit)
-            .await
-            .map_err(|err| {
-                error!("Error while finalizing single transaction: {}", err);
-                InvokeQueryPayload::Error(err.into())
-            })
+        // finalize with concurrency controller
+        debug!("Finalizing transaction with CC...");
+        self.cc_client.finalize_transaction(self.site_id, trans_id, mode, &transaction_history).await?;
+        debug!("Transaction finalized with CC");
+
+        Ok(())
     }
 }
 
@@ -309,15 +285,18 @@ impl SiteManagerService for SddmsSiteManagerService {
 
         // finalize the transaction as well
         let (ret, payload) = if invoke_request.single_stmt_transaction {
-            let finalize_result = self.finalize_single_stmt_transaction(client_id, transaction_id).await;
-            match finalize_result {
+            let replication_result = self.replicate_and_finalize(client_id, transaction_id, FinalizeMode::Commit)
+                .await;
+
+            match replication_result {
                 Ok(_) => {
                     (ReturnStatus::Ok, InvokeQueryPayload::Results(results))
                 }
                 Err(err) => {
-                    (ReturnStatus::Error, err)
+                    (ReturnStatus::Error, InvokeQueryPayload::Error(ApiError::from(err)))
                 }
             }
+
         } else {
             (ReturnStatus::Ok, InvokeQueryPayload::Results(results))
         };
@@ -347,32 +326,17 @@ impl SiteManagerService for SddmsSiteManagerService {
 
         // get the connection for the given client
         debug!("Acquiring connection pool lock...");
-        let mut connection_map_lock = self.client_connections.lock().await;
-        let client_connection = connection_map_lock
-            .get_client_connection(client_id)
-            .unwrap();
-        debug!("Acquired");
+        {
+            let connection_map_lock = self.client_connections.lock().await;
+            let client_connection = connection_map_lock
+                .get_client_connection(client_id)
+                .unwrap();
+            debug!("Acquired");
 
-        debug!("Invoking query finalization statement...");
-        let result = client_connection.invoke_one_off_stmt(finalize_query).await;
-        if let Err(err) = result {
-            error!("Error while finalizing transaction query: {}", err);
-            let api_error: ApiError = SddmsError::site("Failed to finalize transaction")
-                .with_cause(err)
-                .into();
-
-            let mut response = FinalizeTransactionResponse::default();
-            response.set_ret(ReturnStatus::Error);
-            response.finalize_transaction_payload = Some(FinalizeTransactionPayload::Error(api_error));
-            return Ok(Response::new(response));
-        }
-        debug!("Invoked");
-
-        // replicate the transaction locally if commit, do nothing if abort
-        if let FinalizeMode::Commit = finalize_request.mode() {
-            let replicate_result = self.replicate_local_transaction(&mut connection_map_lock, client_id, finalize_request.transaction_id).await;
-            if let Err(err) = replicate_result {
-                error!("Error while replicating query: {}", err);
+            debug!("Invoking query finalization statement...");
+            let result = client_connection.invoke_one_off_stmt(finalize_query).await;
+            if let Err(err) = result {
+                error!("Error while finalizing transaction query: {}", err);
                 let api_error: ApiError = SddmsError::site("Failed to finalize transaction")
                     .with_cause(err)
                     .into();
@@ -382,29 +346,74 @@ impl SiteManagerService for SddmsSiteManagerService {
                 response.finalize_transaction_payload = Some(FinalizeTransactionPayload::Error(api_error));
                 return Ok(Response::new(response));
             }
+            debug!("Invoked");
         }
 
-        // finalize the transaction in the CC
-        debug!("Finalizing transaction with CC...");
-        let finalize_result = self.finalize_transaction_cc(finalize_request.transaction_id, finalize_request.mode()).await;
-        let response = match finalize_result {
+        debug!("Starting to replicate and finalize...");
+        let result = self.replicate_and_finalize(client_id, finalize_request.transaction_id, finalize_request.mode()).await;
+        let (ret, payload) = match result {
             Ok(_) => {
-                let mut response = FinalizeTransactionResponse::default();
-                response.finalize_transaction_payload = Some(FinalizeTransactionPayload::Results(FinalizeTransactionResults::default()));
-                info!("Successfully finalized transaction");
-                response
+                info!("Transaction successfully replicated and finalized");
+                (ReturnStatus::Ok, FinalizeTransactionPayload::Results(FinalizeTransactionResults {}))
             }
-            Err(err_response) => {
-                err_response
+            Err(err) => {
+                error!("Error while finalizing and replicating transaction: {}", err);
+                (ReturnStatus::Error, FinalizeTransactionPayload::Error(ApiError::from(err)))
             }
         };
 
+        let mut response = FinalizeTransactionResponse::default();
+        response.set_ret(ret);
+        response.finalize_transaction_payload = Some(payload);
         Ok(Response::new(response))
     }
 
     async fn replication_update(&self, request: Request<ReplicationUpdateRequest>) -> Result<Response<ReplicationUpdateResponse>, Status> {
-        info!("Got finalize transaction: {:?}", request.remote_addr());
+        info!("Got replication request");
         let replicate_update_request = request.into_inner();
-        todo!()
+        let mut connections = self.client_connections.lock().await;
+        let replication_error = self.replicate_to_clients(&mut connections, &replicate_update_request.update_statements, None)
+            .await
+            .map_err(|err| {
+                error!("Error while performing replication request: {}", err);
+                let err: SddmsError = err.into();
+                ApiError::from(err)
+            })
+            .err();
+
+        if let Some(error) = replication_error {
+            let mut response = ReplicationUpdateResponse {
+                ret: 0,
+                error: Some(error)
+            };
+            response.set_ret(ReturnStatus::Error);
+            return Ok(Response::new(response));
+        }
+
+        let disk_replication_err = self.replicate_on_disk(&replicate_update_request.update_statements)
+            .await
+            .map_err(|err| {
+                error!("Error while performing replication request: {}", err);
+                let err: SddmsError = err.into();
+                ApiError::from(err)
+            })
+            .err();
+
+
+        let ret = if disk_replication_err.is_some() {
+            ReturnStatus::Error
+        } else {
+            info!("Successfully replicated database on site");
+            ReturnStatus::Ok
+        };
+
+        let mut response = ReplicationUpdateResponse {
+            ret: 0,
+            error: replication_error
+        };
+
+        response.set_ret(ret);
+
+        Ok(Response::new(response))
     }
 }
