@@ -66,14 +66,14 @@ impl CentralClient {
         }
     }
 
-    pub async fn acquire_table_lock(&self, site_id: u32, transaction_id: u32, table: &str) -> Result<(), SddmsError> {
+    pub async fn acquire_table_lock(&self, site_id: u32, transaction_id: u32, table: &str, lock_mode: LockMode) -> Result<(), SddmsError> {
         let mut request = AcquireLockRequest {
             site_id,
             transaction_id,
             record_name: table.to_string(),
             lock_mode: 0,
         };
-        request.set_lock_mode(LockMode::Exclusive);
+        request.set_lock_mode(lock_mode);
 
         let response = self.client.clone().acquire_lock(request)
             .await

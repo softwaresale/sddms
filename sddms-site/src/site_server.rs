@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use log::{debug, error, info};
 use rusqlite::Connection;
 use tonic::{Request, Response, Status};
+use sddms_services::central_controller::LockMode;
 use sddms_services::shared::{ApiError, FinalizeMode, ReturnStatus};
 use sddms_services::site_controller::{BeginTransactionRequest, BeginTransactionResponse, BeginTransactionResults, FinalizeTransactionRequest, FinalizeTransactionResponse, FinalizeTransactionResults, InvokeQueryRequest, InvokeQueryResponse, InvokeQueryResults, RegisterClientRequest, RegisterClientResponse, RegisterClientResults, ReplicationUpdateRequest, ReplicationUpdateResponse};
 use sddms_services::site_controller::begin_transaction_response::BeginTransactionPayload;
@@ -42,8 +43,24 @@ impl SddmsSiteManagerService {
             .map_err(|err| err.into())
     }
 
-    async fn acquire_table_lock(&self, trans_id: u32, table: &str) -> Result<(), InvokeQueryResponse> {
-        self.cc_client.acquire_table_lock(self.site_id, trans_id, table)
+    async fn acquire_locks_for_txn(&self, trans_id: u32, read_set: &[String], write_set: &[String]) -> Result<(), InvokeQueryResponse> {
+        for tab in read_set {
+            debug!("Transaction {} is acquiring {} in shared mode...", trans_id, tab);
+            self.acquire_table_lock(trans_id, tab, LockMode::Shared).await?;
+            debug!("Transaction {} acquired {} in shared mode", trans_id, tab);
+        }
+
+        for tab in write_set {
+            debug!("Transaction {} is acquiring {} in exclusive mode...", trans_id, tab);
+            self.acquire_table_lock(trans_id, tab, LockMode::Exclusive).await?;
+            debug!("Transaction {} acquired {} in exclusive mode", trans_id, tab);
+        }
+
+        Ok(())
+    }
+
+    async fn acquire_table_lock(&self, trans_id: u32, table: &str, mode: LockMode) -> Result<(), InvokeQueryResponse> {
+        self.cc_client.acquire_table_lock(self.site_id, trans_id, table, mode)
             .await
             .map_err(|err| {
                 error!("Error while trying to acquire lock: {}", err);
@@ -81,7 +98,7 @@ impl SddmsSiteManagerService {
                     Ok(query_result)
                 }
                 Err(sddms_error) => {
-                    Err(SddmsTermError::from(sddms_error))
+                    Err(sddms_error)
                 }
             }
         }
@@ -240,13 +257,17 @@ impl SiteManagerService for SddmsSiteManagerService {
 
         // try acquiring the lock
         debug!("Acquiring lock for {:?}...", invoke_request.write_set);
-        for tab in &invoke_request.write_set {
-            let lock_result = self.acquire_table_lock(transaction_id, tab).await;
-            if let Err(lock_err) = lock_result {
-                return Ok(Response::new(lock_err))
+
+        // attempt acquiring all locks necessary
+        let lock_requests_result = self.acquire_locks_for_txn(transaction_id, &invoke_request.read_set, &invoke_request.write_set).await;
+        match lock_requests_result {
+            Ok(_) => {
+                debug!("Successfully acquired lock");
+            }
+            Err(err_response) => {
+                return Ok(Response::new(err_response))
             }
         }
-        debug!("Successfully acquired lock");
 
 
         // actually execute the results
