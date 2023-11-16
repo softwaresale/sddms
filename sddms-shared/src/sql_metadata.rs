@@ -31,17 +31,29 @@ fn extract_tables_from_query(query: Box<Query>) -> Vec<String> {
     match *query_body {
         SetExpr::Select(select) => {
             select.from.into_iter()
-                .map(|table| table.relation.to_string())
+                .flat_map(|table| {
+                    let relation_table = table.relation.to_string();
+                    let mut join_tables = table.joins.iter()
+                        .map(|join_tab| join_tab.relation.to_string())
+                        .collect::<Vec<_>>();
+
+                    join_tables.insert(0, relation_table);
+                    join_tables
+                })
                 .collect::<Vec<_>>()
         }
-        SetExpr::Query(_query) => {
-            vec![]
+        SetExpr::Query(query) => {
+            // TODO recursive might be bad...
+            extract_tables_from_query(query)
         }
         SetExpr::SetOperation { .. } => { vec![] }
         SetExpr::Values(_) => { vec![] }
         SetExpr::Insert(_) => { vec![] }
         SetExpr::Update(_) => { vec![] }
-        SetExpr::Table(table) => { vec![table.table_name.unwrap_or_default()] }
+        SetExpr::Table(table) => {
+            table.table_name.map(|name| vec![name])
+                .unwrap_or_default()
+        }
     }
 }
 
