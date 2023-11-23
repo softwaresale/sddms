@@ -3,7 +3,7 @@ mod lock_queue_opt;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{Display, Formatter};
-use log::{info};
+use log::{debug, info, trace};
 use tokio::task::yield_now;
 use sddms_services::central_controller::LockMode;
 use sddms_shared::error::{SddmsError, SddmsTermError};
@@ -120,6 +120,7 @@ impl LockTable {
     async fn attempt_lock_promotion(&self, transaction_id: &TransactionId, resource: &str, mode: LockMode) -> bool {
         let mut resources = self.resources.lock().await;
         let resource_queue = resources.get_mut(resource).unwrap();
+        debug!("{} queue before promotion: {:?}", resource, resource_queue);
         let front_lock = resource_queue.pop_front();
 
         match front_lock {
@@ -133,6 +134,7 @@ impl LockTable {
                         resource_queue.push_front(shared_lock.unwrap());
                     }
                     resource_queue.push_front(exclusive_lock);
+                    debug!("{} queue after promotion: {:?}", resource, resource_queue);
                     true
                 } else {
                     resource_queue.push_front(front_lock);
@@ -209,6 +211,8 @@ impl LockTable {
         let mut resources_table = self.resources.lock().await;
         let resource_vec = resources_table.get_mut(resource).unwrap();
 
+        debug!("{} starting lock queue: {:?}", resource, resource_vec);
+
         let resource_lock = resource_vec.front_mut();
 
         let lock = match resource_lock {
@@ -239,6 +243,9 @@ impl LockTable {
         if remove_lock {
             resource_vec.pop_front();
         }
+
+        debug!("{} ending lock queue: {:?}", resource, resource_vec);
+
         Ok(())
     }
 
@@ -254,8 +261,11 @@ impl LockTable {
         };
 
         resource_queue.push_back(lock);
+        debug!("{} lock queue after enqueueing: {:?}", resource, resource_queue);
         resource_queue = optimize_lock_queue(resource_queue);
+        debug!("{} lock queue after optimizing: {:?}", resource, resource_queue);
         resource_table.insert(resource_name, resource_queue);
+
         Ok(())
     }
 

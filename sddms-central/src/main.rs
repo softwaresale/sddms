@@ -20,7 +20,7 @@ use crate::central_service::CentralService;
 async fn main() -> Result<(), Box<dyn Error>> {
 
     env_logger::builder()
-        .filter_level(LevelFilter::Debug)
+        .filter_level(LevelFilter::Info)
         .parse_default_env()
         .init();
 

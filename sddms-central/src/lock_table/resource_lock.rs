@@ -51,24 +51,52 @@ impl ResourceLock {
         }
     }
 
+    /// We can easily join two shared locks. Joins the current lock as the left lock with other as
+    /// the right lock. The order between the two is preserved
+    fn join_two_shared(self, other: Self) -> (Self, Option<Self>) {
+        let Self::Shared { owners: mut self_owners, order: mut self_order } = self else {
+            panic!("Self is not shared")
+        };
+
+        let Self::Shared { owners: other_owners, order: mut other_order } = other else {
+            panic!("Other is not shared")
+        };
+
+        for owner in other_owners {
+            self_owners.insert(owner);
+        }
+
+        self_order.append(&mut other_order);
+
+        (Self::Shared { owners: self_owners, order: self_order }, None)
+    }
+
+    /// Try upgrading the left lock into an exclusive lock if the right lock is an exclusive lock
+    /// request for one of the transactions holding the shared lock on the left.
+    ///
+    /// For now, this optimization will only work if the shared lock is first locked by the trailing
+    /// request
+    fn try_upgrade_enqueued_lock(self, other: Self) -> (Self, Option<Self>) {
+        let Self::Exclusive { owner } = other else {
+            panic!("Other is not exclusive");
+        };
+
+        // the shared lock can be split
+        if self.is_first_locked_by(&owner) {
+            self.to_exclusive(&owner)
+        } else {
+            (self, Some(other))
+        }
+    }
+
+    /// Try join join self with another lock. Self is always on the left while other is always on
+    /// the right
     pub fn try_join_with(self, other: Self) -> (Self, Option<Self>) {
+        // fold two shared resource locks into each other
         if self.is_shared() && other.is_shared() {
-
-            let Self::Shared { owners: mut self_owners, order: mut self_order } = self else {
-                panic!("Self is not shared")
-            };
-
-            let Self::Shared { owners: other_owners, order: mut other_order } = other else {
-                panic!("Other is not shared")
-            };
-
-            for owner in other_owners {
-                self_owners.insert(owner);
-            }
-
-            self_order.append(&mut other_order);
-
-            (Self::Shared { owners: self_owners, order: self_order }, None)
+            self.join_two_shared(other)
+        } else if self.is_shared() && other.is_exclusive() {
+            self.try_upgrade_enqueued_lock(other)
         } else {
             (self, Some(other))
         }
