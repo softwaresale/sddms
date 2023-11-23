@@ -4,6 +4,7 @@ mod sqlite_row_serializer;
 mod central_client;
 mod client_connection;
 mod transaction_history;
+mod history_logger;
 
 use std::error::Error;
 use std::fs::File;
@@ -18,6 +19,7 @@ use sddms_services::site_controller::site_manager_service_server::SiteManagerSer
 use sddms_shared::error::SddmsError;
 use crate::args::Args;
 use crate::central_client::CentralClient;
+use crate::history_logger::{FileHistoryLogger, HistoryLogger, NopHistoryLogger};
 use crate::site_server::SddmsSiteManagerService;
 
 fn configure_database(db_path: &Path, init_path: &Path) -> Result<Connection, SddmsError> {
@@ -56,6 +58,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    let history_logger: Box<dyn HistoryLogger> = if let Some(history_path) = &args.history_file {
+        FileHistoryLogger::open(history_path)
+            .map(|file_logger| {
+                let file: Box<dyn HistoryLogger> = Box::new(file_logger);
+                file
+            })
+    } else {
+        let nop: Box<dyn HistoryLogger> = Box::new(NopHistoryLogger);
+        Ok(nop)
+    }?;
+
     // establish connection with central server
     let client = CentralClient::new(&args.cc_addr).await?;
     let site_id = client.register_self("0.0.0.0", args.port).await?;
@@ -63,7 +76,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!("Site registered with concurrency controller");
 
     // setup server
-    let service = SddmsSiteManagerService::new(&args.db_path, client, site_id);
+    let service = SddmsSiteManagerService::new(&args.db_path, client, site_id, history_logger);
     let server = SiteManagerServiceServer::new(service);
 
     info!("Site configured");

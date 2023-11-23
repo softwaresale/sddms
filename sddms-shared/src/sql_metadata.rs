@@ -24,6 +24,8 @@ impl SqlMetadata {
     pub fn has_results(&self) -> bool {
         self.has_results
     }
+
+    pub fn take_tables(self) -> HashSet<String> { self.tables }
 }
 
 fn extract_tables_from_query(query: Box<Query>) -> Vec<String> {

@@ -13,6 +13,10 @@ pub struct Args {
     #[arg(short, long)]
     pub init_file: Option<PathBuf>,
 
+    /// Path to write the operation history to
+    #[arg(long)]
+    pub history_file: Option<PathBuf>,
+
     /// path to the sqlite db to open. Creates if it doesn't exist
     pub db_path: PathBuf,
     /// the address of the central controller, <ip_addr>:<port>

@@ -14,6 +14,7 @@ use sddms_services::site_controller::site_manager_service_server::SiteManagerSer
 use sddms_shared::error::{SddmsError, SddmsTermError};
 use crate::central_client::CentralClient;
 use crate::client_connection::{ClientConnectionMap};
+use crate::history_logger::HistoryLogger;
 use crate::transaction_history::{TransactionHistoryMap};
 
 pub struct SddmsSiteManagerService {
@@ -24,16 +25,18 @@ pub struct SddmsSiteManagerService {
     cc_client: CentralClient,
     transaction_history: tokio::sync::Mutex<TransactionHistoryMap>,
     site_id: u32,
+    history_logger: tokio::sync::Mutex<Box<dyn HistoryLogger>>,
 }
 
 impl SddmsSiteManagerService {
-    pub fn new(path: &Path, cc_client: CentralClient, site_id: u32) -> Self {
+    pub fn new<LoggerT: Into<Box<dyn HistoryLogger>>>(path: &Path, cc_client: CentralClient, site_id: u32, logger: LoggerT) -> Self {
         Self {
             db_path: PathBuf::from(path),
             client_connections: tokio::sync::Mutex::new(ClientConnectionMap::new()),
             cc_client,
             transaction_history: tokio::sync::Mutex::default(),
-            site_id
+            site_id,
+            history_logger: tokio::sync::Mutex::new(logger.into()),
         }
     }
 
@@ -228,6 +231,10 @@ impl SiteManagerService for SddmsSiteManagerService {
         response.begin_transaction_payload = Some(BeginTransactionPayload::Value(BeginTransactionResults { transaction_id: trans_id }));
         info!("Successfully registered transaction {}", trans_id);
 
+        // TODO make this not fail by default?
+        self.history_logger.lock().await.log(client_id, self.site_id, trans_id, "Begin Txn")
+            .unwrap();
+
         Ok(Response::new(response))
     }
 
@@ -269,7 +276,6 @@ impl SiteManagerService for SddmsSiteManagerService {
             }
         }
 
-
         // actually execute the results
         let invoke_results = self.execute_query_on_db(client_id, transaction_id, &invoke_request).await;
         // check for failure and return if it did
@@ -302,6 +308,9 @@ impl SiteManagerService for SddmsSiteManagerService {
         response.set_ret(ret);
         response.invoke_query_payload = Some(payload);
         info!("Successfully invoked query");
+
+        self.history_logger.lock().await.log_query(client_id, self.site_id, transaction_id, &invoke_request.write_set, &invoke_request.read_set)
+            .unwrap();
 
         Ok(Response::new(response))
     }
@@ -356,6 +365,10 @@ impl SiteManagerService for SddmsSiteManagerService {
         let mut response = FinalizeTransactionResponse::default();
         response.set_ret(ret);
         response.finalize_transaction_payload = Some(payload);
+
+        self.history_logger.lock().await.log(client_id, self.site_id, finalize_request.transaction_id, finalize_query)
+            .unwrap();
+
         Ok(Response::new(response))
     }
 
@@ -387,6 +400,10 @@ impl SiteManagerService for SddmsSiteManagerService {
             let mut response = ReplicationUpdateResponse::default();
             response.set_ret(ReturnStatus::Ok);
             response.error = None;
+
+            self.history_logger.lock().await.log_replication(replicate_update_request.originating_site, &replicate_update_request.update_statements)
+                .unwrap();
+
             response
         };
 
