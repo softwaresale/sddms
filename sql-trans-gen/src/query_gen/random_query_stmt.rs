@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use rand::distributions::Distribution;
 use rand::Rng;
 use rusqlite::types::Value;
+use crate::db_schema::field_info::ForeignKey;
 
 #[derive(Clone)]
 pub enum RandomQueryStmtKind {
@@ -37,7 +38,9 @@ pub enum RandomQueryStmt {
     Insert {
         /// which columns we are insert into
         columns: Vec<String>,
-        /// the list of records we're going to insert
+        /// the list of records we're going to insert of specifically non-foreign-key columns
         values: Vec<HashMap<String, Value>>,
+        /// a set of foreign keys we need to get
+        foreign_keys: HashMap<String, ForeignKey>,
     },
 }

@@ -1,15 +1,16 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use crate::query_gen::random_query_stmt::RandomQueryStmt;
 use sql_query_builder as sqlb;
 use sql_query_builder::Transaction;
 use rusqlite::types::Value;
+use crate::db_schema::field_info::ForeignKey;
 
 pub struct RandomQuerySpec {
     /// The table we are operating on
     pub(super) table_name: String,
     /// the statement we're going to make
-    pub(super)stmt: RandomQueryStmt
+    pub(super) stmt: RandomQueryStmt
 }
 
 impl RandomQuerySpec {
@@ -17,7 +18,7 @@ impl RandomQuerySpec {
         match &self.stmt {
             RandomQueryStmt::Select { columns } => columns.is_empty(),
             RandomQueryStmt::Update { updates, .. } => updates.is_empty(),
-            RandomQueryStmt::Insert { values, columns} => columns.is_empty() || values.is_empty()
+            RandomQueryStmt::Insert { values, columns, foreign_keys } => columns.is_empty() || values.is_empty() || foreign_keys.is_empty()
         }
     }
 }
@@ -79,6 +80,47 @@ fn stringify_record_value(columns: &[String], mut record: HashMap<String, Value>
     format!("({inner})")
 }
 
+fn create_foreign_keys_with_clauses(record_count: usize, foreign_keys: &HashMap<String, ForeignKey>) -> HashMap<String, (String, String)> {
+    let mut columns: HashMap<String, (String, String)> = HashMap::with_capacity(foreign_keys.len());
+    for (column_name, foreign_key) in foreign_keys {
+        let foreign_field = foreign_key.field();
+        let foreign_table = foreign_key.table();
+
+        let set_name = format!("{}_set", column_name);
+        let query = format!("{} AS (SELECT {} as {} FROM {} ORDER BY RANDOM() LIMIT {})", set_name, foreign_field, column_name, foreign_table, 1 /* was record_count */);
+        columns.insert(column_name.clone(), (set_name, query));
+    }
+
+    columns
+}
+
+fn create_values_with_clauses(column_order: &[String], foreign_key_columns: &HashSet<String>, records: Vec<HashMap<String, Value>>) -> (String, String) {
+
+    let records_column_order = column_order.into_iter()
+        .filter(|name| !foreign_key_columns.contains(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let column_order_str = &records_column_order
+        .join(",");
+
+    let records_string = records.into_iter()
+        .map(|record| stringify_record_value(&records_column_order, record))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let clause = format!("VALUES_CTE({}) AS (VALUES {})", column_order_str, records_string);
+    ("VALUES_CTE".to_string(), clause)
+}
+
+fn create_with_cause(clauses: Vec<&String>) -> String {
+    let clauses_string = clauses.into_iter()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(",\n");
+    format!("WITH {}\n", clauses_string)
+}
+
 impl From<RandomQuerySpec> for SqlQuery {
     fn from(value: RandomQuerySpec) -> Self {
         let name = value.table_name;
@@ -108,12 +150,38 @@ impl From<RandomQuerySpec> for SqlQuery {
 
                 SqlQuery::Update(update)
             }
-            RandomQueryStmt::Insert { columns, values } => {
-                let mut insert = sqlb::Insert::new();
-                insert = insert.insert_into(&stringify_insert_into(&name, &columns));
-                for value in values {
-                    insert = insert.values(&stringify_record_value(&columns, value));
+            RandomQueryStmt::Insert { columns, values, foreign_keys } => {
+
+                let foreign_key_columns = foreign_keys.keys().cloned().collect::<HashSet<_>>();
+                let foreign_keys_clause_map = create_foreign_keys_with_clauses(values.len(), &foreign_keys);
+                let (values_clause_ref, values_clause) = create_values_with_clauses(&columns,  &foreign_key_columns, values);
+
+                let mut foreign_key_clauses = foreign_keys_clause_map
+                    .values()
+                    .map(|(_, clause)| clause)
+                    .collect::<Vec<_>>();
+
+                foreign_key_clauses.push(&values_clause);
+
+                let with_clause = create_with_cause(foreign_key_clauses);
+
+                let mut value_select = sqlb::Select::new();
+                for column in &columns {
+                    value_select = value_select.select(column);
                 }
+
+                let column_to_set_map = foreign_keys_clause_map.into_iter()
+                    .map(|(_, (handle_name, _))| (handle_name))
+                    .collect::<Vec<_>>()
+                    .join(",");
+
+                let value_select_from = format!("{},{}", values_clause_ref, column_to_set_map);
+                value_select = value_select.from(&value_select_from);
+
+                let mut insert = sqlb::Insert::new();
+                insert = insert.raw(&with_clause);
+                insert = insert.insert_into(&stringify_insert_into(&name, &columns));
+                insert = insert.select(value_select);
 
                 SqlQuery::Insert(insert)
             }

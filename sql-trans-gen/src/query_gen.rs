@@ -8,7 +8,7 @@ use rand::distributions::{Bernoulli, Distribution};
 use rand::seq::{IteratorRandom};
 use rusqlite::types::{Value};
 use crate::db_schema::{DatabaseSchema, TableInfo};
-use crate::db_schema::field_info::FieldInfo;
+use crate::db_schema::field_info::{FieldInfo, ForeignKey};
 use crate::query_gen::query_specs::{GeneratedTransaction, RandomQuerySpec, RandomTransactionSpec};
 use crate::query_gen::random_query_stmt::{RandomQueryStmt, RandomQueryStmtKind, RandomQueryStmtKindGen};
 use crate::value_generator::{TableRecordGenerator, ValueGeneratorMap};
@@ -54,12 +54,14 @@ impl QueryGenerator {
         }
     }
 
-    fn gen_random_records_from_columns(&self, columns: &[String], table_gen: &TableRecordGenerator, count_range: Range<usize>) -> Vec<HashMap<String, Value>> {
+    fn gen_random_records_from_columns(&self, columns: &[String], table_gen: &TableRecordGenerator, foreign_keys: &HashMap<String, ForeignKey>, count_range: Range<usize>) -> Vec<HashMap<String, Value>> {
         let mut rng = thread_rng();
         let record_count = rng.gen_range(count_range);
         let mut records: Vec<HashMap<String, Value>> = Vec::with_capacity(record_count);
         for _ in 0..record_count {
-            let record = table_gen.generate_record(columns).unwrap();
+            let record = table_gen.generate_record(columns).unwrap().into_iter()
+                .filter(|(column, _)| !foreign_keys.contains_key(column))
+                .collect();
             records.push(record);
         }
 
@@ -117,9 +119,14 @@ impl QueryGenerator {
                     .cloned()
                     .collect::<Vec<_>>();
 
-                let records = self.gen_random_records_from_columns(&columns, table_gen, 1..6);
+                let foreign_keys = table_spec.fields().iter()
+                    .filter(|(_, info)| info.foreign_key().is_some())
+                    .map(|(col_name, info)| (col_name.clone(), info.foreign_key().clone().unwrap()))
+                    .collect::<HashMap<_, _>>();
 
-                RandomQueryStmt::Insert { columns, values: records }
+                let records = self.gen_random_records_from_columns(&columns, table_gen, &foreign_keys, 1..6);
+
+                RandomQueryStmt::Insert { columns, values: records, foreign_keys }
             }
         };
 
