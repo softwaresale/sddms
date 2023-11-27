@@ -5,5 +5,6 @@ members = [
   "sddms-central",
   "sddms-client",
   "sddms-site",
-  "sddms-services"
+  "sddms-services",
+  "sql-trans-gen"
 ]

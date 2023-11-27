@@ -1,0 +1,20 @@
+[package]
+name = "sql-trans-gen"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+toml = { version = "0.8.8" }
+sql_query_builder = "2.0.0"
+rusqlite = "0.30.0"
+clap = { version = "4.4.7", features = ["derive"] }
+env_logger = "0.10.0"
+log = "0.4.20"
+sddms-shared = { path = '../sddms-shared' }
+serde = "1.0.193"
+regex-syntax = "0.8.2"
+rand = "0.8.5"
+rand_regex = "0.16.0"
+sqlparser = "0.39.0"
