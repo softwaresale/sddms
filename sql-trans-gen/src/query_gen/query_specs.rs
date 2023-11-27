@@ -221,7 +221,7 @@ impl From<RandomTransactionSpec> for GeneratedTransaction {
 impl Display for GeneratedTransaction {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            GeneratedTransaction::Single(single) => f.write_str(single),
+            GeneratedTransaction::Single(single) => write!(f, "{};", single),
             GeneratedTransaction::Transaction(txn) => write!(f, "{}", txn)
         }
     }

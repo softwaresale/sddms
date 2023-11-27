@@ -6,7 +6,10 @@ use clap::Parser;
 pub struct Args {
     /// Path to the configuration file to use
     #[arg(short, long)]
-    pub config: Option<PathBuf>,
+    pub count: Option<u32>,
+    /// Where to write the output to. Defaults to stdout
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
     /// path to the sqlite db to open. Creates if it doesn't exist
     pub db_path: PathBuf,
 }
