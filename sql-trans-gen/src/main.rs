@@ -44,8 +44,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let connection = Connection::open_with_flags(args.db_path, OpenFlags::empty() | OpenFlags::SQLITE_OPEN_READ_ONLY)?;
 
     // schema
-    let db_schema = DatabaseSchema::new(&connection);
-    println!("{:?}", db_schema);
+    let db_schema = {
+        let mut schema = DatabaseSchema::new(&connection);
+        schema.add_insert_restricted("students");
+        schema
+    };
+    println!("{:#?}", db_schema);
 
     let query_gen = QueryGenerator::new(db_schema, ValueGeneratorMap::default());
 

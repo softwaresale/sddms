@@ -3,6 +3,7 @@ use rand::distributions::Distribution;
 use rand::Rng;
 use rusqlite::types::Value;
 
+#[derive(Clone)]
 pub enum RandomQueryStmtKind {
     Select,
     Update,
@@ -30,6 +31,8 @@ pub enum RandomQueryStmt {
     Update {
         /// the map of updates, where each key is a column name and the value is the updated value
         updates: HashMap<String, Value>,
+        /// how to determine which record to update
+        predicate: String,
     },
     Insert {
         /// which columns we are insert into

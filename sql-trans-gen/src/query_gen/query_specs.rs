@@ -12,6 +12,16 @@ pub struct RandomQuerySpec {
     pub(super)stmt: RandomQueryStmt
 }
 
+impl RandomQuerySpec {
+    pub fn is_empty(&self) -> bool {
+        match &self.stmt {
+            RandomQueryStmt::Select { columns } => columns.is_empty(),
+            RandomQueryStmt::Update { updates, .. } => updates.is_empty(),
+            RandomQueryStmt::Insert { values, columns} => columns.is_empty() || values.is_empty()
+        }
+    }
+}
+
 pub struct RandomTransactionSpec {
     pub(super) single: bool,
     pub(super) stmts: Vec<RandomQuerySpec>,
@@ -84,7 +94,7 @@ impl From<RandomQuerySpec> for SqlQuery {
                 select_builder = select_builder.from(&name);
                 SqlQuery::Select(select_builder)
             }
-            RandomQueryStmt::Update { updates } => {
+            RandomQueryStmt::Update { updates, predicate } => {
                 let sets = updates.into_iter()
                     .map(|(field, value)| stringify_update_set(field, value))
                     .collect::<Vec<_>>();
@@ -94,6 +104,7 @@ impl From<RandomQuerySpec> for SqlQuery {
                     update = update.set(set);
                 }
                 update = update.update(&name);
+                update = update.where_clause(&predicate);
 
                 SqlQuery::Update(update)
             }

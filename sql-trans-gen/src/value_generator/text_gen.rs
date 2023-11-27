@@ -8,6 +8,7 @@ use sddms_shared::error::SddmsError;
 use crate::config::TextGenRule;
 use crate::value_generator::ValueGenerator;
 
+#[derive(Clone)]
 pub struct TextValueGenerator
 {
     pattern: Alphanumeric,

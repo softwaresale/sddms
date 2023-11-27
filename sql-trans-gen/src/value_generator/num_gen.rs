@@ -1,4 +1,6 @@
-use std::ops::Range;
+use std::collections::Bound;
+use std::f64;
+use std::ops::{RangeBounds, RangeInclusive};
 use rand::{Rng, thread_rng};
 use rand::distributions::uniform::SampleUniform;
 use rusqlite::types::Value;
@@ -6,10 +8,11 @@ use sddms_shared::error::SddmsError;
 use crate::config::{IntegerGenRule, RealGenRule};
 use crate::value_generator::ValueGenerator;
 
+#[derive(Clone)]
 struct NumberGenerator<ReprT>
     where ReprT: Clone + PartialEq + PartialOrd + SampleUniform
 {
-    range: Range<ReprT>
+    range: RangeInclusive<ReprT>
 }
 
 impl<ReprT> NumberGenerator<ReprT>
@@ -17,7 +20,7 @@ impl<ReprT> NumberGenerator<ReprT>
 {
     fn new(min: ReprT, max: ReprT) -> Self {
         Self {
-            range: min..max
+            range: min..=max
         }
     }
 
@@ -27,21 +30,41 @@ impl<ReprT> NumberGenerator<ReprT>
     }
 }
 
+#[derive(Clone)]
 pub struct IntegerGenerator {
     gen: NumberGenerator<i64>
 }
 
 impl IntegerGenerator {
-    pub fn new(min: i64, max: i64) -> Self {
+    pub fn new<RangeT: RangeBounds<i64>>(range: RangeT) -> Self {
+
+        let min = match range.start_bound() {
+            Bound::Included(inc) => *inc,
+            Bound::Excluded(exc) => *exc + 1,
+            Bound::Unbounded => i64::MIN
+        };
+
+        let max = match range.end_bound() {
+            Bound::Included(inc) => *inc,
+            Bound::Excluded(exc) => *exc + 1,
+            Bound::Unbounded => i64::MIN
+        };
+
         Self {
             gen: NumberGenerator::new(min, max)
         }
     }
 }
 
+impl Default for IntegerGenerator {
+    fn default() -> Self {
+        Self::new(..)
+    }
+}
+
 impl From<IntegerGenRule> for IntegerGenerator {
     fn from(value: IntegerGenRule) -> Self {
-        Self::new(value.min, value.max)
+        Self::new(value.min..=value.max)
     }
 }
 
@@ -52,21 +75,41 @@ impl ValueGenerator for IntegerGenerator {
     }
 }
 
+#[derive(Clone)]
 pub struct FloatGenerator {
     gen: NumberGenerator<f64>
 }
 
 impl FloatGenerator {
-    pub fn new(min: f64, max: f64) -> Self {
+    pub fn new<RangeT: RangeBounds<f64>>(range: RangeT) -> Self {
+
+        let min = match range.start_bound() {
+            Bound::Included(inc) => *inc,
+            Bound::Excluded(exc) => exc + 1f64,
+            Bound::Unbounded => f64::MIN
+        };
+
+        let max = match range.end_bound() {
+            Bound::Included(inc) => *inc,
+            Bound::Excluded(exc) => *exc + 1f64,
+            Bound::Unbounded => f64::MIN
+        };
+
         Self {
             gen: NumberGenerator::new(min, max)
         }
     }
 }
 
+impl Default for FloatGenerator {
+    fn default() -> Self {
+        Self::new(..)
+    }
+}
+
 impl From<RealGenRule> for FloatGenerator {
     fn from(value: RealGenRule) -> Self {
-        Self::new(value.min, value.max)
+        Self::new(value.min..value.max)
     }
 }
 

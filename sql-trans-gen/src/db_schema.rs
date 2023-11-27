@@ -1,10 +1,17 @@
-use std::collections::{HashMap};
+mod check_parser;
+pub mod field_info;
+
+use std::collections::{HashMap, HashSet};
+use rand::Rng;
+use rand::seq::IteratorRandom;
 use rusqlite::Connection;
 use rusqlite::types::Type;
-use sqlparser::ast::{ColumnOption, DataType, Statement};
+use sqlparser::ast::{DataType, Statement, TableConstraint};
 use sqlparser::dialect::SQLiteDialect;
 use sqlparser::parser::Parser;
 use sddms_shared::error::SddmsError;
+use crate::db_schema::field_info::{FieldInfo, ForeignKey};
+use crate::query_gen::random_query_stmt::RandomQueryStmtKind;
 
 struct TableMetadata {
     tp: String,
@@ -76,21 +83,17 @@ pub struct TableInfo {
     /// the name of the table
     name: String,
     /// fields
-    fields: HashMap<String, Type>,
-    /// the primary key field
-    primary_key: String,
+    fields: HashMap<String, FieldInfo>,
 }
 
 impl TableInfo {
     pub fn name(&self) -> &str {
         &self.name
     }
-    pub fn fields(&self) -> &HashMap<String, Type> {
+    pub fn fields(&self) -> &HashMap<String, FieldInfo> {
         &self.fields
     }
-    pub fn primary_key(&self) -> &str {
-        &self.primary_key
-    }
+    pub fn fields_mut(&mut self) -> &mut HashMap<String, FieldInfo> { &mut self.fields }
 }
 
 impl TryFrom<TableMetadata> for TableInfo {
@@ -104,41 +107,48 @@ impl TryFrom<TableMetadata> for TableInfo {
             .parse_statement()
             .map_err(|err| SddmsError::general(format!("Error while parsing table spec statement for table {}", value.table_name)).with_cause(err))?;
 
-        let Statement::CreateTable { columns, .. } = create_table_statement else {
+        let Statement::CreateTable { columns, constraints, .. } = create_table_statement else {
             panic!("Is not a CREATE_TABLE statement")
         };
 
-        let mut primary_key: Option<String> = None;
-        let mut column_specs: HashMap<String, Type> = HashMap::new();
+        let mut column_specs: HashMap<String, FieldInfo> = HashMap::new();
         for column in columns {
-            let column_name = column.name.value;
+            let column_name = (&column).name.value.clone();
+            let field_info = FieldInfo::from(column);
+            column_specs.insert(column_name, field_info);
+        }
 
-            let is_primary_key = column.options.into_iter()
-                .map(|opt| opt.option)
-                .any(|option| match option {
-                    ColumnOption::Unique { is_primary } => is_primary,
-                    _ => false
-                });
-
-            if is_primary_key {
-                primary_key = Some(column_name.clone());
+        for constraint in constraints {
+            match constraint {
+                TableConstraint::Unique { is_primary, columns, .. } => {
+                    for column in columns {
+                        column_specs.get_mut(&column.to_string()).unwrap().set_primary_key(is_primary);
+                    }
+                }
+                TableConstraint::ForeignKey { referred_columns, foreign_table, columns, .. } => {
+                    let foreign_key = ForeignKey::new(foreign_table.to_string(), referred_columns.first().unwrap().to_string());
+                    for column in columns {
+                        column_specs.get_mut(&column.to_string()).unwrap().set_foreign_key(foreign_key.clone());
+                    }
+                }
+                TableConstraint::Check { .. } => {}
+                TableConstraint::Index { .. } => {}
+                TableConstraint::FulltextOrSpatial { .. } => {}
             }
-
-            let column_type = TableMetadata::map_data_type_to_sqlite_type(column.data_type).unwrap();
-            column_specs.insert(column_name, column_type);
         }
 
         Ok(TableInfo {
             name: value.table_name,
             fields: column_specs,
-            primary_key: primary_key.unwrap()
         })
     }
 }
 
 #[derive(Debug)]
 pub struct DatabaseSchema {
-    tables: HashMap<String, TableInfo>
+    tables: HashMap<String, TableInfo>,
+    insert_restricted: HashSet<String>,
+    update_restricted: HashSet<String>,
 }
 
 impl DatabaseSchema {
@@ -162,6 +172,37 @@ impl DatabaseSchema {
             .collect::<Vec<_>>()
     }
 
+    fn resolve_foreign_key_types(mut tables: HashMap<String, TableInfo>) -> HashMap<String, TableInfo> {
+        let mut all_resolved_field_names: Vec<(String, String, ForeignKey)> = Vec::new();
+        // get a list of fields that need updating
+        for (table_name, table) in &tables {
+            let mut updated_foreign_key_fields: Vec<(String, String, ForeignKey)> = table.fields.iter()
+                .filter(|(_, field)| field.foreign_key().as_ref().is_some_and(|inner| inner.tp().is_none()))
+                .map(|(field_name, field_info)| {
+                    let foreign_key = field_info.foreign_key().clone().unwrap();
+                    let foreign_key_type = tables
+                        .get(foreign_key.table()).unwrap()
+                        .fields()
+                        .get(foreign_key.field()).unwrap()
+                        .tp().clone();
+
+                    (table_name.clone(), field_name.clone(), foreign_key.with_type(foreign_key_type))
+                })
+                .collect::<Vec<_>>();
+            all_resolved_field_names.append(&mut updated_foreign_key_fields);
+        }
+
+        // make all the updates
+        for (table_name, field_name, updated_foreign_key) in all_resolved_field_names {
+            tables
+                .get_mut(&table_name).unwrap()
+                .fields_mut().get_mut(&field_name).unwrap()
+                .set_foreign_key(updated_foreign_key);
+        }
+
+        tables
+    }
+
     pub fn new(connection: &Connection) -> DatabaseSchema {
         let table_metadata = Self::get_table_metadata(connection);
 
@@ -172,11 +213,40 @@ impl DatabaseSchema {
             tables.insert(metadata.name.clone(), metadata);
         }
 
+        // resolve all of the types of any foreign keys
+        tables = Self::resolve_foreign_key_types(tables);
+
         Self {
-            tables
+            tables,
+            insert_restricted: HashSet::new(),
+            update_restricted: HashSet::new(),
         }
     }
 
+    pub fn add_insert_restricted<StrT: Into<String>>(&mut self, tab: StrT) {
+        self.insert_restricted.insert(tab.into());
+    }
+
+    pub fn add_update_restricted<StrT: Into<String>>(&mut self, tab: StrT) {
+        self.update_restricted.insert(tab.into());
+    }
+
+    pub fn choose_table<RngT: Rng>(&self, rng: &mut RngT, op_kind: Option<RandomQueryStmtKind>) -> (&String, &TableInfo) {
+        self.tables.iter()
+            .filter(|(tab_name, _)| {
+                let op_kind = op_kind.as_ref();
+                match op_kind {
+                    None => true,
+                    Some(kind) => match kind {
+                        RandomQueryStmtKind::Select => true,
+                        RandomQueryStmtKind::Update => !self.update_restricted.contains(*tab_name),
+                        RandomQueryStmtKind::Insert => !self.insert_restricted.contains(*tab_name),
+                    }
+                }
+            })
+            .choose(rng)
+            .unwrap()
+    }
 
     pub fn tables(&self) -> &HashMap<String, TableInfo> {
         &self.tables
