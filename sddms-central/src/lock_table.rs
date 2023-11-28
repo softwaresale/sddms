@@ -1,5 +1,6 @@
 mod resource_lock;
 mod lock_queue_opt;
+mod deadlock_graph;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{Display, Formatter};
@@ -8,6 +9,7 @@ use tokio::task::yield_now;
 use sddms_services::central_controller::LockMode;
 use sddms_shared::error::{SddmsError, SddmsTermError};
 use crate::live_transaction_set::LiveTransactionSet;
+use crate::lock_table::deadlock_graph::DeadlockGraph;
 use crate::lock_table::lock_queue_opt::optimize_lock_queue;
 use crate::lock_table::resource_lock::{ResourceLock};
 use crate::transaction_id::TransactionId;
@@ -179,10 +181,10 @@ impl LockTable {
         // In either of these cases, we need to enqueue our locking request.
 
         // check if this will cause deadlock
-        let caused_deadlock = self.detect_deadlock(transaction_id, resource).await?;
+        let caused_deadlock = self.detect_deadlock(transaction_id, resource).await;
         if let Some(deadlock_cause) = caused_deadlock {
             info!("{}'s attempt to acquire {} lock on {} will cause deadlocking. Failing.", transaction_id, mode, resource);
-            return Ok(LockRequestResult::Deadlocked(deadlock_cause.into()));
+            return Ok(LockRequestResult::Deadlocked(deadlock_cause));
         }
 
         // get in the queue for the given resource
@@ -275,33 +277,18 @@ impl LockTable {
         Ok(())
     }
 
-    pub async fn detect_deadlock(&self, transaction_id: TransactionId, resource: &str) -> Result<Option<SddmsTermError>, SddmsTermError> {
-        // get the lock set of the given transaction
-        let locked_resources = self.lock_set(&transaction_id).await?;
+    pub async fn detect_deadlock(&self, transaction_id: TransactionId, resource: &str) -> Option<SddmsTermError> {
+        let resource_map = self.resources.lock().await;
 
-        // get the set of transactions that are before this transaction for the given resource
-        let resources = self.resources.lock().await;
-        let desired_resource_waiters = self.resource_waiters(&resources, resource, true).await;
+        let is_deadlocked = DeadlockGraph::new()
+            .construct(&resource_map)
+            .would_cause_deadlock(&transaction_id, resource);
 
-        // for each locked resource...
-        for resource in locked_resources {
-            // ... see what resources are waiting on the resources we own...
-            // side note here: we don't include the first because we know that this transaction is the first
-            let owned_resource_waiters = self.resource_waiters(&resources, &resource, false).await;
-
-            // ... and if any of them are in line before us for the resource we desire ...
-            for waiter in &desired_resource_waiters {
-                if owned_resource_waiters.contains(waiter) {
-                    // ... then we will cause a deadlock
-                    // let err = ;
-                    // return Err(err)
-                    return Ok(Some(SddmsError::central(format!("Transaction {} will deadlock system if it locks {}", transaction_id, resource)).into()))
-                }
-            }
+        if is_deadlocked {
+            Some(SddmsTermError::from(SddmsError::central(format!("transaction {}'s attempt to acquire lock for {} caused deadlock", transaction_id, resource))))
+        } else {
+            None
         }
-
-        // ...otherwise we will not cause a deadlock
-        Ok(None)
     }
 
     async fn resource_waiters<'resource_map>(&self, resource_map: &'resource_map HashMap<String, VecDeque<ResourceLock>>, resource: &str, include_first: bool) -> HashSet<&'resource_map TransactionId> {

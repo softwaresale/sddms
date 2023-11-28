@@ -181,4 +181,11 @@ impl ResourceLock {
             AcquireLockMode::CannotAcquire
         }
     }
+
+    pub fn owners(&self) -> HashSet<&TransactionId> {
+        match self {
+            ResourceLock::Shared { owners, .. } => owners.iter().collect::<HashSet<_>>(),
+            ResourceLock::Exclusive { owner } => HashSet::from([owner])
+        }
+    }
 }
