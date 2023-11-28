@@ -257,6 +257,46 @@ impl LockTable {
         Ok(())
     }
 
+    pub async fn remove_all_pending_requests(&self, transaction_id: &TransactionId) {
+        let mut resource_table = self.resources.lock().await;
+
+        for (_, lock_queue) in resource_table.iter_mut() {
+            lock_queue.retain_mut(|resource_lock| Self::remove_request_from_lock(resource_lock, transaction_id))
+        }
+    }
+
+    // return true if should be retained, false otherwise
+    fn remove_request_from_lock(lock: &mut ResourceLock, transaction_id: &TransactionId) -> bool {
+        if lock.is_locked_by(transaction_id) {
+            match lock {
+                ResourceLock::Shared { owners, order } => {
+                    // remove this transaction as an owner
+                    owners.remove(transaction_id);
+
+                    // owners is empty, return true
+                    if owners.is_empty() {
+                        return false;
+                    }
+
+                    // otherwise, not empty yet
+                    if let Some(to_remove_idx) = order.iter().position(|id| id == transaction_id) {
+                        order.remove(to_remove_idx);
+                    }
+
+                    // not ready to be deleted
+                    true
+                }
+                ResourceLock::Exclusive { .. } => {
+                    // ready to be deleted
+                    false
+                }
+            }
+        } else {
+            // not locked, so can't be deleted
+            true
+        }
+    }
+
     async fn enqueue_resource(&self, transaction_id: TransactionId, resource: &str, mode: LockMode) -> Result<(), SddmsError> {
         let mut resource_table = self.resources.lock().await;
         let (resource_name, mut resource_queue) = resource_table.remove_entry(resource)

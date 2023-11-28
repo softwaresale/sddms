@@ -44,6 +44,9 @@ impl CentralService {
                 })?;
         }
 
+        // remove any pending lock requests as well
+        self.lock_tab.remove_all_pending_requests(&trans_id).await;
+
         Ok(())
     }
 }
