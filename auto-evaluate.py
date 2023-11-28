@@ -5,6 +5,7 @@ import os
 import tempfile
 import subprocess
 from typing import Optional, TextIO
+import time
 
 
 class SiteInfo:
@@ -166,10 +167,13 @@ schema file: {schema_file}
 
     # Start the concurrency controller
     cc_handle, cc_output_file = start_concurrency_controller(prefix, build_version)
+    time.sleep(1)
     print(f"Started the concurrency controller with process id {cc_handle.pid}")
 
     # start the different sites
     site_handles = start_sites(prefix, site_infos, database_path, build_version)
+    time.sleep(1)
+    print('started sites...')
 
     # Start the sites and wait for them to finish
     client_handles = start_clients(prefix, client_infos, build_version)
