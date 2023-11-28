@@ -4,7 +4,7 @@ import argparse
 import os
 import tempfile
 import subprocess
-import typing
+from typing import Optional, TextIO
 
 
 class SiteInfo:
@@ -13,6 +13,9 @@ class SiteInfo:
         self.port = port
         history_file_name = f'site-{site_id}-history.txt'
         self.history_file_path = os.path.join(prefix, history_file_name)
+
+    def __str__(self):
+        return f"""SiteInfo(site_id={self.site_id}, port={self.port})"""
 
 
 class ClientInfo:
@@ -24,6 +27,9 @@ class ClientInfo:
         self.transactions_file_path = os.path.join(prefix, transactions_file_name)
         output_file_name = f'site-{self.site_id}-client-{self.client_id}-output.txt'
         self.output_file_path = os.path.join(prefix, output_file_name)
+
+    def __str__(self):
+        return f"""ClientInfo(site_id={self.site_id}, client_id={self.client_id})"""
 
     def get_site_id(self):
         return self.site_id
@@ -47,6 +53,14 @@ def files_prefix(keep_files: bool) -> str:
         return os.path.join(os.getcwd(), 'results')
     else:
         return os.path.join(tempfile.gettempdir(), 'results')
+
+
+def setup_database(db_path: str, schema_path: str):
+    cmd_line = ['sqlite3', '-init', schema_path, db_path, '.quit']
+    print(f'setting up database: {cmd_line}...')
+    handle = subprocess.run(cmd_line)
+    handle.check_returncode()
+    print('database is set up')
 
 
 def generate_site_specs(prefix: str, site_count: int) -> list[SiteInfo]:
@@ -80,14 +94,14 @@ def generate_transaction_files(client_specs: list[ClientInfo],
         handle.check_returncode()
 
 
-def start_concurrency_controller(prefix: str, build_version: str) -> tuple[subprocess.Popen[str], typing.TextIO]:
+def start_concurrency_controller(prefix: str, build_version: str) -> tuple[subprocess.Popen[str], TextIO]:
     executable = os.path.join(os.getcwd(), 'target', build_version, 'sddms-central')
     output_path = os.path.join(prefix, 'sddms-central-output.txt')
     output_file = open(output_path, 'w')
     return subprocess.Popen(executable, stdout=output_file, stderr=subprocess.STDOUT, encoding='utf-8'), output_file
 
 
-def start_sites(prefix: str, site_infos: list[SiteInfo], db_path: str, build_version: str) -> list[tuple[subprocess.Popen[str], typing.TextIO]]:
+def start_sites(prefix: str, site_infos: list[SiteInfo], db_path: str, build_version: str) -> list[tuple[subprocess.Popen[str], TextIO]]:
     handles = []
     for site in site_infos:
         executable = os.path.join(os.getcwd(), 'target', build_version, 'sddms-site')
@@ -102,7 +116,7 @@ def start_sites(prefix: str, site_infos: list[SiteInfo], db_path: str, build_ver
     return handles
 
 
-def start_clients(prefix: str, client_infos: list[ClientInfo], build_version: str) -> list[tuple[subprocess.Popen[str], typing.TextIO]]:
+def start_clients(prefix: str, client_infos: list[ClientInfo], build_version: str) -> list[tuple[subprocess.Popen[str], TextIO]]:
     handles = []
     for client in client_infos:
         executable = os.path.join(os.getcwd(), 'target', build_version, 'sddms-client')
@@ -117,9 +131,9 @@ def start_clients(prefix: str, client_infos: list[ClientInfo], build_version: st
     return handles
 
 
-def main(database_path: str, site_count: int, client_count: int, transaction_count: int, keep_files: bool, build_version: str):
+def main(database_path: str, site_count: int, client_count: int, transaction_count: int, keep_files: bool,
+         build_version: str, schema_file: Optional[str]):
 
-    # print(f'Config: ')
     print(f'''
 Config:
 DB path: {database_path}
@@ -128,11 +142,16 @@ client count: {client_count}
 transaction count: {transaction_count}
 keep_files: {keep_files}
 build: {build_version}
+schema file: {schema_file}
 ''')
 
     # get the prefix that all result files should be created relative to
     prefix = files_prefix(keep_files)
     print(f'Writing result files in {prefix}')
+
+    # set up the database file if there's a schema
+    if schema_file is not None:
+        setup_database(database_path, schema_file)
 
     # Make a set of the sites
     site_infos = generate_site_specs(prefix, site_count)
@@ -156,8 +175,7 @@ build: {build_version}
     client_handles = start_clients(prefix, client_infos, build_version)
     for handle, output_file in client_handles:
         ret = handle.wait()
-        if ret != 0:
-            print(f'Client process {handle.pid} exited with non-zero return code {ret}')
+        print(f'Client process {handle.pid} exited with return code {ret}')
 
     # Wait on sites to finish up
     for handle, output_path in site_handles:
@@ -183,6 +201,8 @@ if __name__ == '__main__':
     parser.add_argument('-t', '--transaction-count', help='The number of transactions to invoke', default=100)
     parser.add_argument('-k', '--keep-files', help="If set, don't delete intermediate files", default=False, action='store_true')
     parser.add_argument('-b', '--build', help='Which build to use', choices=['release', 'debug'], default='release')
+    parser.add_argument('--schema', help='A schema file to setup a fresh database with', required=False)
 
     args = parser.parse_args()
-    main(args.database, args.site_count, args.client_count, args.transaction_count, args.keep_files, args.build)
+    main(args.database, args.site_count, args.client_count, args.transaction_count, args.keep_files, args.build,
+         args.schema)
