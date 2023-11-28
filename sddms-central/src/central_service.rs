@@ -27,22 +27,12 @@ impl CentralService {
     }
 
     async fn release_all_locks(&self, trans_id: TransactionId) -> Result<(), FinalizeTransactionResponse> {
-        let held_resources = self.lock_tab.lock_set(&trans_id)
+        // atomically release all locks at once
+        self.lock_tab.release_all_locks(&trans_id)
             .await
             .map_err(|err| {
                 FinalizeTransactionResponse::from(err)
             })?;
-
-        for resource in &held_resources {
-            self.lock_tab.release_lock(trans_id, resource)
-                .await
-                .map_err(|err| {
-                    let mut response = FinalizeTransactionResponse::default();
-                    response.set_ret(ReturnStatus::Error);
-                    response.error = Some(err.into());
-                    response
-                })?;
-        }
 
         // remove any pending lock requests as well
         self.lock_tab.remove_all_pending_requests(&trans_id).await;

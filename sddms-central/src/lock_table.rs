@@ -5,6 +5,7 @@ mod deadlock_graph;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{Display, Formatter};
 use log::{debug, info, trace};
+use tokio::sync::MutexGuard;
 use tokio::task::yield_now;
 use sddms_services::central_controller::LockMode;
 use sddms_shared::error::{SddmsError, SddmsTermError};
@@ -209,6 +210,47 @@ impl LockTable {
         Ok(lock_result)
     }
 
+    async fn release_lock_internal<'guard_lifetime>(resources_table: &mut MutexGuard<'guard_lifetime, HashMap<String, VecDeque<ResourceLock>>>, transaction_id: &TransactionId, resources: &[String]) -> Result<(), SddmsError> {
+
+        for resource in resources {
+            let resource_vec = resources_table.get_mut(resource).unwrap();
+
+            let resource_lock = resource_vec.front_mut();
+            // debug!("{} starting lock queue: {:?}", resource, resource_vec);
+
+            let lock = match resource_lock {
+                None => {
+                    return Err(SddmsError::central(format!("transaction {} does not own the lock for {}", transaction_id, resource)));
+                }
+                Some(resource_lock) => {
+                    if !resource_lock.is_locked_by(&transaction_id) {
+                        return Err(SddmsError::central(format!("transaction {} does not own the lock for {}", transaction_id, resource)));
+                    } else {
+                        resource_lock
+                    }
+                }
+            };
+
+            let remove_lock = match lock {
+                ResourceLock::Shared { owners, order } => {
+                    owners.remove(&transaction_id);
+                    let index = order.iter().position(|x| x == transaction_id).unwrap();
+                    order.remove(index);
+                    owners.is_empty()
+                }
+                ResourceLock::Exclusive { .. } => {
+                    true
+                }
+            };
+
+            if remove_lock {
+                resource_vec.pop_front();
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn release_lock(&self, transaction_id: TransactionId, resource: &str) -> Result<(), SddmsError> {
 
         // Start shrinking if necessary
@@ -217,44 +259,20 @@ impl LockTable {
         }
 
         let mut resources_table = self.resources.lock().await;
-        let resource_vec = resources_table.get_mut(resource).unwrap();
+        Self::release_lock_internal(&mut resources_table, &transaction_id, &[resource.to_string()]).await
+    }
 
-        debug!("{} starting lock queue: {:?}", resource, resource_vec);
-
-        let resource_lock = resource_vec.front_mut();
-
-        let lock = match resource_lock {
-            None => {
-                return Err(SddmsError::central(format!("transaction {} does not own the lock for {}", transaction_id, resource)));
-            }
-            Some(resource_lock) => {
-                if !resource_lock.is_locked_by(&transaction_id) {
-                    return Err(SddmsError::central(format!("transaction {} does not own the lock for {}", transaction_id, resource)));
-                } else {
-                    resource_lock
-                }
-            }
-        };
-
-        let remove_lock = match lock {
-            ResourceLock::Shared { owners, order } => {
-                owners.remove(&transaction_id);
-                let index = order.iter().position(|x| *x == transaction_id).unwrap();
-                order.remove(index);
-                owners.is_empty()
-            }
-            ResourceLock::Exclusive { .. } => {
-                true
-            }
-        };
-
-        if remove_lock {
-            resource_vec.pop_front();
+    pub async fn release_all_locks(&self, transaction_id: &TransactionId) -> Result<(), SddmsError> {
+        // Start shrinking if necessary
+        if !self.live_transactions.is_shrinking(&transaction_id).await {
+            self.live_transactions.start_shrinking(&transaction_id).await?;
         }
 
-        debug!("{} ending lock queue: {:?}", resource, resource_vec);
+        let lock_set = self.lock_set(&transaction_id).await?.into_iter()
+            .collect::<Vec<_>>();
 
-        Ok(())
+        let mut resources_table = self.resources.lock().await;
+        Self::release_lock_internal(&mut resources_table, transaction_id, &lock_set).await
     }
 
     pub async fn remove_all_pending_requests(&self, transaction_id: &TransactionId) {
