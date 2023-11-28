@@ -10,7 +10,7 @@ use sddms_shared::error::SddmsError;
 use sddms_shared::sql_metadata::{parse_transaction_stmt, TransactionStmt};
 use crate::args::Args;
 use crate::query_results::QueryResults;
-use crate::reader::{Command, MetaCommand, read_next_command};
+use crate::reader::{Command, MetaCommand, read_next_command, split_statements};
 use crate::site_client::SddmsSiteClient;
 use crate::transaction_state::TransactionState;
 
@@ -126,7 +126,9 @@ async fn input_file_mode(input_file_path: &Path, args: &Args, mut client: SddmsS
         .filter_map(|line| line.ok())
         .collect::<Vec<_>>();
 
-    handle_lines(&all_lines, &args, &mut client, &mut transaction_state).await
+    let all_statements = split_statements(all_lines);
+
+    handle_lines(&all_statements, &args, &mut client, &mut transaction_state).await
 }
 
 #[tokio::main]

@@ -4,7 +4,7 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
-    /// Path to the configuration file to use
+    /// how many transactions to generate
     #[arg(short, long)]
     pub count: Option<u32>,
     /// Where to write the output to. Defaults to stdout

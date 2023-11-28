@@ -85,11 +85,11 @@ pub fn read_next_command<HelperT: Helper, HistoryT: History>(reader: &mut Editor
     Ok(Command::Lines(split_statements(lines)))
 }
 
-fn split_statements(lines: Vec<String>) -> Vec<String> {
+pub fn split_statements(lines: Vec<String>) -> Vec<String> {
     let buffer = lines.join("\n");
     buffer.split(";").into_iter()
-        .filter(|slice| !slice.is_empty())
         .map(|slice| slice.trim())
+        .filter(|slice| !slice.is_empty())
         .map(|slice| format!("{};", slice))
         .collect()
 }
