@@ -41,8 +41,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let transactions = query_gen.gen_transactions(args.count.unwrap_or(10) as usize);
     let mut txn_buffer = String::new();
-    for txn in transactions {
-        txn_buffer.write_fmt(format_args!("{}\n", txn))
+    for (txn_idx, txn) in transactions.iter().enumerate() {
+        txn_buffer.write_fmt(format_args!("--txn {}--\n{}\n", txn_idx, txn))
             .expect("Txn format should not fail");
     }
 
