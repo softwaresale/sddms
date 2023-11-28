@@ -1,5 +1,5 @@
 use clap::Parser;
-use log::{info, LevelFilter};
+use log::{error, info, LevelFilter, warn};
 use rustyline::{DefaultEditor};
 use tabled::Table;
 use sddms_shared::error::SddmsError;
@@ -16,7 +16,7 @@ mod site_client;
 mod query_results;
 mod transaction_state;
 
-async fn invoke_query(client: &mut SddmsSiteClient, transaction_state: &TransactionState, query: &str) -> Result<(), SddmsError> {
+async fn invoke_query(client: &mut SddmsSiteClient, transaction_state: &TransactionState, query: &str) -> Result<bool, SddmsError> {
     let trans_id = transaction_state.transaction_id().ok();
 
     let results = client.invoke_query(trans_id, query).await?;
@@ -27,9 +27,13 @@ async fn invoke_query(client: &mut SddmsSiteClient, transaction_state: &Transact
             let table: Table = results.into();
             println!("{}", table);
         }
+        QueryResults::DeadLock(deadlock_err) => {
+            error!("{}", deadlock_err);
+            return Ok(true);
+        }
     };
 
-    Ok(())
+    Ok(false)
 }
 
 #[tokio::main]
@@ -38,6 +42,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter_level(LevelFilter::Info)
         .init();
     let args = Args::parse();
+    if args.rollback_on_deadlock {
+        warn!("Rollback on deadlock is on!")
+    }
     info!("Connecting to {}", args.connect_host);
 
     // configure connection to site controller
@@ -99,7 +106,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     } else {
-                        invoke_query(&mut client, &transaction_state, stmt).await
+                        let dead_locked = invoke_query(&mut client, &transaction_state, stmt).await?;
+                        if dead_locked && args.rollback_on_deadlock {
+                            warn!("Automatically rolling back transaction");
+                            let transaction_id = transaction_state.transaction_id()?;
+                            client.finalize_transaction(transaction_id, TransactionStmt::Rollback).await?;
+                            transaction_state.clear();
+                        }
+                        Ok(())
                     };
 
                     if invoke_stmt_result.is_err() {

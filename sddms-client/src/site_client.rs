@@ -1,6 +1,6 @@
 use serde_json::{Map, Value};
 use tonic::transport::Channel;
-use sddms_services::shared::FinalizeMode;
+use sddms_services::shared::{FinalizeMode, ReturnStatus};
 use sddms_services::site_controller::invoke_query_response::InvokeQueryPayload;
 use sddms_services::site_controller::{BeginTransactionRequest, FinalizeTransactionRequest, InvokeQueryRequest, RegisterClientRequest};
 use sddms_services::site_controller::begin_transaction_response::BeginTransactionPayload;
@@ -10,6 +10,11 @@ use sddms_services::site_controller::site_manager_service_client::SiteManagerSer
 use sddms_shared::error::SddmsError;
 use sddms_shared::sql_metadata::TransactionStmt;
 use crate::query_results::{QueryResults, ResultsInfo};
+
+pub enum FinalizeResult {
+    Ok,
+    Deadlock(SddmsError),
+}
 
 pub struct SddmsSiteClient {
     client: SiteManagerServiceClient<Channel>,
@@ -89,11 +94,16 @@ impl SddmsSiteClient {
             .map_err(|status| SddmsError::client(format!("Error while sending request: {} {}", status.code(), status.message())))?;
 
         let invoke_response = response.into_inner();
+        let ret = invoke_response.ret().clone();
         let result = match invoke_response.invoke_query_payload.unwrap() {
             InvokeQueryPayload::Error(api_error) => {
-                let sddms_err_cause: SddmsError = api_error.into();
-                Err(SddmsError::client("Failed to invoke query")
-                    .with_cause(sddms_err_cause))
+                if let ReturnStatus::Deadlocked = ret {
+                    Ok(QueryResults::DeadLock(api_error.into()))
+                } else {
+                    let sddms_err_cause: SddmsError = api_error.into();
+                    Err(SddmsError::client("Failed to invoke query")
+                        .with_cause(sddms_err_cause))
+                }
             }
             InvokeQueryPayload::Results(query_results) => {
                 let results = if let Some(affected_records) = query_results.affected_records {

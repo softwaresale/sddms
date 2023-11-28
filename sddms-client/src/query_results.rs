@@ -1,6 +1,7 @@
 use serde_json::{Map, Value};
 use tabled::builder::Builder;
 use tabled::Table;
+use sddms_shared::error::SddmsError;
 
 #[derive(Debug)]
 pub struct ResultsInfo {
@@ -11,7 +12,8 @@ pub struct ResultsInfo {
 #[derive(Debug)]
 pub enum QueryResults {
     AffectedRows(u32),
-    Results(ResultsInfo)
+    Results(ResultsInfo),
+    DeadLock(SddmsError),
 }
 
 impl Into<Table> for ResultsInfo {
