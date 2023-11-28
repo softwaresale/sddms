@@ -7,6 +7,7 @@ use sddms_shared::error::{SddmsError, SddmsResult};
 pub enum MetaCommand {
     Quit,
     PrintTransactionInfo,
+    CancelLine,
 }
 
 impl MetaCommand {
@@ -21,12 +22,14 @@ impl TryFrom<&str> for MetaCommand {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let meta_command = RegexSet::new([
             r#"\\q(uit)?"#,
-            r#"\\txn"#
+            r#"\\txn"#,
+            r#"\\c(ancel)?"#,
         ]).unwrap();
 
         let commands = vec![
             MetaCommand::Quit,
             MetaCommand::PrintTransactionInfo,
+            MetaCommand::CancelLine,
         ];
 
         let result = meta_command.matches(value).iter()

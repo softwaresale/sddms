@@ -108,6 +108,7 @@ async fn interactive_mode(client_id: u32, args: &Args, mut client: SddmsSiteClie
                             println!("No transaction in progress");
                         }
                     }
+                    MetaCommand::CancelLine => { /* NOP */ }
                 }
             }
             Command::Lines(next_statements) => {
