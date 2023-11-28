@@ -5,8 +5,13 @@ use sddms_services::central_controller::register_site_response::RegisterSitePayl
 use sddms_services::central_controller::{AcquireLockRequest, FinalizeTransactionRequest, LockMode, RegisterSiteRequest, RegisterTransactionRequest};
 use sddms_services::central_controller::acquire_lock_response::AcquireLockPayload;
 use sddms_services::central_controller::register_transaction_response::RegisterTransactionPayload;
-use sddms_services::shared::FinalizeMode;
-use sddms_shared::error::SddmsError;
+use sddms_services::shared::{FinalizeMode, ReturnStatus};
+use sddms_shared::error::{SddmsError, SddmsTermError};
+
+pub enum AcquireLockRet {
+    Ok,
+    Deadlock(SddmsTermError)
+}
 
 pub struct CentralClient {
     client: ConcurrencyControllerServiceClient<Channel>,
@@ -66,7 +71,7 @@ impl CentralClient {
         }
     }
 
-    pub async fn acquire_table_lock(&self, site_id: u32, transaction_id: u32, table: &str, lock_mode: LockMode) -> Result<(), SddmsError> {
+    pub async fn acquire_table_lock(&self, site_id: u32, transaction_id: u32, table: &str, lock_mode: LockMode) -> Result<AcquireLockRet, SddmsError> {
         let mut request = AcquireLockRequest {
             site_id,
             transaction_id,
@@ -80,14 +85,21 @@ impl CentralClient {
             .map_err(|err| SddmsError::site("Failed to transport acquire lock request").with_cause(err))
             ?.into_inner();
 
+        let ret = response.ret().clone();
+
         match response.acquire_lock_payload.unwrap() {
             AcquireLockPayload::Error(api_err) => {
-                let err: SddmsError = api_err.into();
-                Err(SddmsError::site(format!("Failed to acquire lock for {}", table))
-                    .with_cause(err))
+
+                if let ReturnStatus::Deadlocked = ret {
+                    Ok(AcquireLockRet::Deadlock(SddmsTermError::from(SddmsError::central("Acquiring locks failed due to deadlock"))))
+                } else {
+                    let err: SddmsError = api_err.into();
+                    Err(SddmsError::site(format!("Failed to acquire lock for {}", table))
+                        .with_cause(err))
+                }
             }
             AcquireLockPayload::Results(_) => {
-                Ok(())
+                Ok(AcquireLockRet::Ok)
             }
         }
     }

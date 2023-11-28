@@ -12,7 +12,7 @@ use sddms_services::site_controller::invoke_query_response::InvokeQueryPayload;
 use sddms_services::site_controller::register_client_response::RegisterClientPayload;
 use sddms_services::site_controller::site_manager_service_server::SiteManagerService;
 use sddms_shared::error::{SddmsError, SddmsTermError};
-use crate::central_client::CentralClient;
+use crate::central_client::{AcquireLockRet, CentralClient};
 use crate::client_connection::{ClientConnectionMap};
 use crate::history_logger::HistoryLogger;
 use crate::transaction_history::{TransactionHistoryMap};
@@ -49,20 +49,30 @@ impl SddmsSiteManagerService {
     async fn acquire_locks_for_txn(&self, trans_id: u32, read_set: &[String], write_set: &[String]) -> Result<(), InvokeQueryResponse> {
         for tab in read_set {
             debug!("Transaction {} is acquiring {} in shared mode...", trans_id, tab);
-            self.acquire_table_lock(trans_id, tab, LockMode::Shared).await?;
+            let lock_result = self.acquire_table_lock(trans_id, tab, LockMode::Shared).await?;
+            if let AcquireLockRet::Deadlock(deadlock_err) = lock_result {
+                let mut response = InvokeQueryResponse::from(deadlock_err);
+                response.set_ret(ReturnStatus::Deadlocked);
+                return Err(response);
+            }
             debug!("Transaction {} acquired {} in shared mode", trans_id, tab);
         }
 
         for tab in write_set {
             debug!("Transaction {} is acquiring {} in exclusive mode...", trans_id, tab);
-            self.acquire_table_lock(trans_id, tab, LockMode::Exclusive).await?;
+            let lock_result = self.acquire_table_lock(trans_id, tab, LockMode::Exclusive).await?;
+            if let AcquireLockRet::Deadlock(deadlock_err) = lock_result {
+                let mut response = InvokeQueryResponse::from(deadlock_err);
+                response.set_ret(ReturnStatus::Deadlocked);
+                return Err(response);
+            }
             debug!("Transaction {} acquired {} in exclusive mode", trans_id, tab);
         }
 
         Ok(())
     }
 
-    async fn acquire_table_lock(&self, trans_id: u32, table: &str, mode: LockMode) -> Result<(), InvokeQueryResponse> {
+    async fn acquire_table_lock(&self, trans_id: u32, table: &str, mode: LockMode) -> Result<AcquireLockRet, InvokeQueryResponse> {
         self.cc_client.acquire_table_lock(self.site_id, trans_id, table, mode)
             .await
             .map_err(|err| {
@@ -263,7 +273,7 @@ impl SiteManagerService for SddmsSiteManagerService {
         };
 
         // try acquiring the lock
-        debug!("Acquiring lock for {:?}...", invoke_request.write_set);
+        debug!("Acquiring lock(s) for {:?}...", invoke_request.write_set);
 
         // attempt acquiring all locks necessary
         let lock_requests_result = self.acquire_locks_for_txn(transaction_id, &invoke_request.read_set, &invoke_request.write_set).await;
