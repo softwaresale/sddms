@@ -7,7 +7,7 @@ use log::{error, info, LevelFilter, warn};
 use rustyline::{DefaultEditor};
 use tabled::Table;
 use sddms_shared::error::SddmsError;
-use sddms_shared::sql_metadata::{parse_transaction_stmt, TransactionStmt};
+use sddms_shared::sql_metadata::{parse_transaction_stmt, split_stmts_into_transactions, TransactionStmt};
 use crate::args::Args;
 use crate::query_results::QueryResults;
 use crate::reader::{Command, MetaCommand, read_next_command, split_statements};
@@ -52,7 +52,10 @@ async fn handle_lines(next_statements: &[String], args: &Args, client: &mut Sddm
             match transaction_stmt {
                 TransactionStmt::Begin => {
                     client.begin_transaction().await
-                        .and_then(|id| transaction_state.push(id))
+                        .and_then(|id| {
+                            println!("Starting transaction {}", id);
+                            transaction_state.push(id)
+                        })
                 }
                 finalize_cmd => {
                     let transaction_id = transaction_state.transaction_id()?;
@@ -68,6 +71,8 @@ async fn handle_lines(next_statements: &[String], args: &Args, client: &mut Sddm
                 let transaction_id = transaction_state.transaction_id()?;
                 client.finalize_transaction(transaction_id, TransactionStmt::Rollback).await?;
                 transaction_state.clear();
+                // just go ahead and bail
+                return Ok(());
             }
             Ok(())
         };
@@ -129,7 +134,17 @@ async fn input_file_mode(input_file_path: &Path, args: &Args, mut client: SddmsS
 
     let all_statements = split_statements(all_lines);
 
-    handle_lines(&all_statements, &args, &mut client, &mut transaction_state).await
+    // split all statements into transactions
+    let transactions = split_stmts_into_transactions(all_statements)?;
+
+    // if a transaction gets auto roll-backed, then it'll skip the remainder of the transaction
+    // and carry on to the next
+    // TODO implement auto-retry
+    for transaction in &transactions {
+        handle_lines(transaction, &args, &mut client, &mut transaction_state).await?;
+    }
+
+    Ok(())
 }
 
 #[tokio::main]

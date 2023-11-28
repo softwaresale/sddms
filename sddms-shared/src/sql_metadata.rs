@@ -152,9 +152,54 @@ pub fn parse_transaction_stmt(sql: &str) -> Result<Option<TransactionStmt>, Sddm
     Ok(transaction_kind)
 }
 
+enum TransactionStatementMode {
+    Open,
+    Close,
+    Normal,
+}
+
+fn classify_transaction_stmt(sql: &str) -> Result<TransactionStatementMode, SddmsError> {
+    let trans_stmt = parse_transaction_stmt(sql)?;
+    if trans_stmt.is_none() {
+        return Ok(TransactionStatementMode::Normal);
+    }
+
+    Ok(match trans_stmt.unwrap() {
+        TransactionStmt::Begin => TransactionStatementMode::Open,
+        _ => TransactionStatementMode::Close
+    })
+}
+
+pub fn split_stmts_into_transactions(stmts: Vec<String>) -> Result<Vec<Vec<String>>, SddmsError> {
+    let mut transactions: Vec<Vec<String>> = Vec::new();
+    let mut has_transaction = false;
+    for stmt in stmts {
+        match classify_transaction_stmt(&stmt)? {
+            TransactionStatementMode::Open => {
+                let new_transaction = vec![stmt];
+                transactions.push(new_transaction);
+                has_transaction = true;
+            }
+            TransactionStatementMode::Normal => {
+                if has_transaction {
+                    transactions.last_mut().unwrap().push(stmt)
+                } else {
+                    transactions.push(vec![stmt])
+                }
+            }
+            TransactionStatementMode::Close => {
+                transactions.last_mut().unwrap().push(stmt);
+                has_transaction = false;
+            }
+        }
+    }
+
+    Ok(transactions)
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::sql_metadata::parse_statements;
+    use crate::sql_metadata::{parse_statements, split_stmts_into_transactions};
 
     #[test]
     fn parses_select() {
@@ -166,5 +211,23 @@ mod tests {
         let metadata = metadata_list.get(0).unwrap();
         assert_eq!(metadata.modifiable, false);
         assert!(metadata.tables.contains("students"));
+    }
+
+    #[test]
+    fn split_stmts_into_transactions__works() {
+        let stmts = vec!["BEGIN", "SELECT * FROM STUDENTS", "COMMIT", "SELECT * FROM STUDENTS", "BEGIN", "SELECT * FROM STUDENTS", "COMMIT"].iter()
+            .map(|str_ref| str_ref.to_string())
+            .collect::<Vec<_>>();
+        let transactions = split_stmts_into_transactions(stmts).unwrap();
+        assert_eq!(transactions.len(), 3);
+        assert_eq!(transactions.get(0).unwrap(), &vec!["BEGIN", "SELECT * FROM STUDENTS", "COMMIT"].iter()
+            .map(|str_ref| str_ref.to_string())
+            .collect::<Vec<_>>());
+        assert_eq!(transactions.get(1).unwrap(), &vec!["SELECT * FROM STUDENTS"].iter()
+            .map(|str_ref| str_ref.to_string())
+            .collect::<Vec<_>>());
+        assert_eq!(transactions.get(2).unwrap(), &vec!["BEGIN", "SELECT * FROM STUDENTS", "COMMIT"].iter()
+            .map(|str_ref| str_ref.to_string())
+            .collect::<Vec<_>>());
     }
 }
