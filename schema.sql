@@ -29,5 +29,23 @@ CREATE TABLE classes (
     FOREIGN KEY (teacher_id) REFERENCES professors(id)
 );
 
+INSERT INTO students (name, gpa)
+    VALUES
+        ('test1', 3.4),
+        ('test2', 3.4),
+        ('test3', 3.4),
+        ('test4', 3.4),
+        ('test5', 3.4),
+        ('test6', 3.4);
+
+INSERT INTO professors (name, years_teaching)
+    VALUES
+        ('test1', 23),
+        ('test2', 23),
+        ('test3', 23),
+        ('test4', 23),
+        ('test5', 23),
+        ('test6', 23);
+
 COMMIT;
 
