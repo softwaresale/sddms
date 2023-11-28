@@ -17,6 +17,7 @@ pub enum LockRequestResult {
     HadLock,
     AcquiredLock,
     PromotedLock,
+    Deadlocked(SddmsTermError),
 }
 
 impl Display for LockRequestResult {
@@ -24,7 +25,8 @@ impl Display for LockRequestResult {
         match self {
             LockRequestResult::HadLock => f.write_str("already had lock"),
             LockRequestResult::AcquiredLock => f.write_str("acquired lock"),
-            LockRequestResult::PromotedLock => f.write_str("promoted lock to exclusive")
+            LockRequestResult::PromotedLock => f.write_str("promoted lock to exclusive"),
+            LockRequestResult::Deadlocked(deadlock_error) => write!(f, "{}", deadlock_error),
         }
     }
 }
@@ -177,7 +179,11 @@ impl LockTable {
         // In either of these cases, we need to enqueue our locking request.
 
         // check if this will cause deadlock
-        self.detect_deadlock(transaction_id, resource).await?;
+        let caused_deadlock = self.detect_deadlock(transaction_id, resource).await?;
+        if let Some(deadlock_cause) = caused_deadlock {
+            info!("{}'s attempt to acquire {} lock on {} will cause deadlocking. Failing.", transaction_id, mode, resource);
+            return Ok(LockRequestResult::Deadlocked(deadlock_cause.into()));
+        }
 
         // get in the queue for the given resource
         self.enqueue_resource(transaction_id, resource, mode).await?;
@@ -269,7 +275,7 @@ impl LockTable {
         Ok(())
     }
 
-    pub async fn detect_deadlock(&self, transaction_id: TransactionId, resource: &str) -> Result<(), SddmsError> {
+    pub async fn detect_deadlock(&self, transaction_id: TransactionId, resource: &str) -> Result<Option<SddmsTermError>, SddmsTermError> {
         // get the lock set of the given transaction
         let locked_resources = self.lock_set(&transaction_id).await?;
 
@@ -287,14 +293,15 @@ impl LockTable {
             for waiter in &desired_resource_waiters {
                 if owned_resource_waiters.contains(waiter) {
                     // ... then we will cause a deadlock
-                    let err = SddmsError::central(format!("Transaction {} will deadlock system if it locks {}", transaction_id, resource));
-                    return Err(err)
+                    // let err = ;
+                    // return Err(err)
+                    return Ok(Some(SddmsError::central(format!("Transaction {} will deadlock system if it locks {}", transaction_id, resource)).into()))
                 }
             }
         }
 
         // ...otherwise we will not cause a deadlock
-        Ok(())
+        Ok(None)
     }
 
     async fn resource_waiters<'resource_map>(&self, resource_map: &'resource_map HashMap<String, VecDeque<ResourceLock>>, resource: &str, include_first: bool) -> HashSet<&'resource_map TransactionId> {

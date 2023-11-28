@@ -8,7 +8,7 @@ use sddms_services::central_controller::register_transaction_response::RegisterT
 use sddms_services::central_controller::release_lock_response::ReleaseLockPayload;
 use sddms_services::shared::{ApiError, ReturnStatus};
 use crate::connection_pool::ConnectionPool;
-use crate::lock_table::{LockTable};
+use crate::lock_table::{LockRequestResult, LockTable};
 use crate::transaction_id::{TransactionId, TransactionIdGenerator};
 
 pub struct CentralService {
@@ -115,11 +115,22 @@ impl ConcurrencyControllerService for CentralService {
 
         let response = match lock_result {
             Ok(result) => {
-                let mut acquire_lock_response = AcquireLockResponse::default();
-                acquire_lock_response.set_ret(ReturnStatus::Ok);
-                acquire_lock_response.acquire_lock_payload = Some(AcquireLockPayload::Results(AcquireLockResults { acquired: true }));
-                info!("{} successfully locked {}: {}", trans_id, acquire_lock_request.record_name, result);
-                acquire_lock_response
+                match result {
+                    LockRequestResult::Deadlocked(cause) => {
+                        info!("{} successfully locked {}: {}", trans_id, acquire_lock_request.record_name, cause);
+                        let mut acquire_lock_response = AcquireLockResponse::default();
+                        acquire_lock_response.set_ret(ReturnStatus::Deadlocked);
+                        acquire_lock_response.acquire_lock_payload = Some(AcquireLockPayload::Error(ApiError::from(cause)));
+                        acquire_lock_response
+                    }
+                    success => {
+                        let mut acquire_lock_response = AcquireLockResponse::default();
+                        acquire_lock_response.set_ret(ReturnStatus::Ok);
+                        acquire_lock_response.acquire_lock_payload = Some(AcquireLockPayload::Results(AcquireLockResults { acquired: true }));
+                        info!("{} successfully locked {}: {}", trans_id, acquire_lock_request.record_name, success);
+                        acquire_lock_response
+                    }
+                }
             }
             Err(err) => {
                 error!("Error while trying to acquire lock: {}", err);
