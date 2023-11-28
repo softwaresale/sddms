@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::{File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -62,12 +63,17 @@ impl HistoryLogger for FileHistoryLogger {
 
     fn log_replication(&mut self, originating_site: u32, cmds: &[String]) -> Result<(), SddmsError> {
 
-        let write_tables = cmds.iter()
-            .filter_map(|cmd| parse_statements(cmd).ok())
-            .flat_map(|metadata| metadata.into_iter())
-            .filter(|metadata| metadata.modifiable())
-            .flat_map(|metadata| metadata.take_tables().into_iter())
-            .collect::<Vec<_>>();
+        let mut write_tables = Vec::new();
+        for cmd in cmds {
+            let Ok(stmt_metadatas) = parse_statements(cmd) else {
+                return Err(SddmsError::site("Failed to parse replication statement"));
+            };
+            let unique_write_tables = stmt_metadatas.into_iter()
+                .flat_map(|metadata| metadata.take_write_tables())
+                .collect::<HashSet<_>>();
+
+            write_tables.extend(unique_write_tables.into_iter());
+        }
 
         let write_info = format!("Write({:?})", write_tables);
 

@@ -159,11 +159,6 @@ impl SddmsSiteClient {
         }
 
         let metadata = sql_statements.get(0).unwrap();
-        let (read_set, write_set) = if metadata.modifiable() {
-            (Vec::new(), Vec::from_iter(metadata.tables().iter().cloned()))
-        } else {
-            (Vec::from_iter(metadata.tables().iter().cloned()), Vec::new())
-        };
 
         let single_stmt_trans = trans_id.is_none();
 
@@ -171,8 +166,8 @@ impl SddmsSiteClient {
             transaction_id: trans_id.unwrap_or_default(),
             query: String::from(query),
             has_results: metadata.has_results(),
-            read_set,
-            write_set,
+            read_set: metadata.read_tables().iter().cloned().collect::<Vec<_>>(),
+            write_set: metadata.write_tables().iter().cloned().collect::<Vec<_>>(),
             single_stmt_transaction: single_stmt_trans,
             client_id: self.client_id(),
         })
