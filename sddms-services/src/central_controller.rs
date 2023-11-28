@@ -1,3 +1,4 @@
+use std::fmt::{Display, Formatter};
 use tonic::include_proto;
 use crate::central_controller::register_site_response::RegisterSitePayload;
 use crate::response_from_error_for;
@@ -14,3 +15,13 @@ response_from_error_for!(RegisterTransactionResponse, RegisterTransactionPayload
 response_from_error_for!(AcquireLockResponse, AcquireLockPayload, acquire_lock_payload);
 response_from_error_for!(ReleaseLockResponse, ReleaseLockPayload, release_lock_payload);
 response_from_error_for!(FinalizeTransactionResponse, error);
+
+impl Display for LockMode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LockMode::Unspecified => write!(f, "unspecified"),
+            LockMode::Exclusive => write!(f, "exclusive"),
+            LockMode::Shared => write!(f, "shared")
+        }
+    }
+}
