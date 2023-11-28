@@ -359,6 +359,9 @@ impl SiteManagerService for SddmsSiteManagerService {
             debug!("Invoked");
         }
 
+        self.history_logger.lock().await.log(client_id, self.site_id, finalize_request.transaction_id, finalize_query)
+            .unwrap();
+
         debug!("Starting to replicate and finalize...");
         let result = self.replicate_and_finalize(client_id, finalize_request.transaction_id, finalize_request.mode()).await;
         let (ret, payload) = match result {
@@ -375,9 +378,6 @@ impl SiteManagerService for SddmsSiteManagerService {
         let mut response = FinalizeTransactionResponse::default();
         response.set_ret(ret);
         response.finalize_transaction_payload = Some(payload);
-
-        self.history_logger.lock().await.log(client_id, self.site_id, finalize_request.transaction_id, finalize_query)
-            .unwrap();
 
         Ok(Response::new(response))
     }

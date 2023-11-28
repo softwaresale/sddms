@@ -7,5 +7,6 @@ members = [
   "sddms-site",
   "sddms-services",
   "sql-trans-gen",
-  "parser-dump"
+  "parser-dump",
+  "history-verifier"
 ]

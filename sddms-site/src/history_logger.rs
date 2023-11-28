@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::fs::{File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
+use time::format_description::well_known::Iso8601;
+use time::OffsetDateTime;
 use sddms_shared::error::SddmsError;
 use sddms_shared::sql_metadata::parse_statements;
 
@@ -55,13 +57,18 @@ impl FileHistoryLogger {
 
 impl HistoryLogger for FileHistoryLogger {
     fn log(&mut self, client_id: u32, site_id: u32, trans_id: u32, cmd: &str) -> Result<(), SddmsError> {
-        self.output.write_fmt(format_args!("site={}, client={}, txn={}: {}\n", site_id, client_id, trans_id, cmd))
+        let now = OffsetDateTime::now_utc();
+
+        let formatted = now.format(&Iso8601::DATE_TIME_OFFSET).unwrap();
+
+        self.output.write_fmt(format_args!("{} | site={}, client={}, txn={}: {}\n", formatted, site_id, client_id, trans_id, cmd))
             .map_err(|err| SddmsError::general("Failed to log history").with_cause(err))?;
         self.output.flush()
             .map_err(|err| SddmsError::general("Failed to flush history").with_cause(err))
     }
 
     fn log_replication(&mut self, originating_site: u32, cmds: &[String]) -> Result<(), SddmsError> {
+        let now = OffsetDateTime::now_utc();
 
         let mut write_tables = Vec::new();
         for cmd in cmds {
@@ -77,7 +84,7 @@ impl HistoryLogger for FileHistoryLogger {
 
         let write_info = format!("Write({:?})", write_tables);
 
-        self.output.write_fmt(format_args!("replication: orig_site={}: {}\n", originating_site, write_info))
+        self.output.write_fmt(format_args!("{} | replication: orig_site={}: {}\n", now, originating_site, write_info))
             .map_err(|err| SddmsError::general("Failed to log history").with_cause(err))?;
         self.output.flush()
             .map_err(|err| SddmsError::general("Failed to flush history").with_cause(err))
