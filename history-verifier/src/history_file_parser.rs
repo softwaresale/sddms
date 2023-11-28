@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
-use std::fs::read;
 use std::io::BufRead;
 use log::warn;
 use regex::{Regex, RegexSet};
@@ -39,7 +38,7 @@ pub struct Action {
 impl Display for Action {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let transaction_id = TransactionId::from(self);
-        write!(f, "{} {}", transaction_id, self.action)
+        write!(f, "{} {} {}", self.instant, transaction_id, self.action)
     }
 }
 

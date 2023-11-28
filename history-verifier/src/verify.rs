@@ -1,9 +1,8 @@
 mod conflict_diagnosis;
 
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
 use std::ops::Not;
-use crate::history_file_parser::{Action, ActionKind};
+use crate::history_file_parser::{ActionKind};
 use crate::organize::AssociatedActionMap;
 use crate::transaction_id::{TransactionId, TransactionPair};
 use crate::verify::conflict_diagnosis::ConflictDiagnosis;
