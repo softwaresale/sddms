@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fs::File;
 use std::io::BufReader;
+use std::process::ExitCode;
 use clap::Parser;
 use log::{debug, error, info, LevelFilter};
 use crate::args::Args;
@@ -16,7 +17,7 @@ mod verify;
 mod transaction_id;
 mod serial_view;
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<ExitCode, Box<dyn Error>> {
 
     env_logger::builder()
         .filter_level(LevelFilter::Info)
@@ -26,7 +27,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if args.history_file_paths.is_empty() {
         info!("No files provided, so nothing to do!");
-        return Ok(())
+        return Ok(ExitCode::SUCCESS)
     }
 
     let file_count = args.history_file_paths.len();
@@ -58,6 +59,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     match verify_action_history(&associated_actions) {
         Ok(_) => {
             info!("History is conflict free!");
+            Ok(ExitCode::SUCCESS)
         }
         Err(conflict_error) => {
             let error_count = conflict_error.len();
@@ -65,9 +67,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 println!("{}\n", err);
             }
             error!("There was/were {} conflicts", error_count);
+            Ok(ExitCode::FAILURE)
         }
     }
-
-    info!("Done!");
-    Ok(())
 }
