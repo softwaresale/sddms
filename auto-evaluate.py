@@ -132,6 +132,16 @@ def start_clients(prefix: str, client_infos: list[ClientInfo], build_version: st
     return handles
 
 
+def check_serializability(prefix: str, build_version: str, site_infos: list[SiteInfo]):
+    history_files = map(lambda site_info: site_info.history_file_path, site_infos)
+    executable = os.path.join(os.getcwd(), 'target', build_version, 'history-verifier')
+    cmd_line = [executable, *history_files]
+    output_file_path = os.path.join(prefix, 'history-verifier-output.txt')
+    output_file = open(output_file_path, 'w')
+    handle = subprocess.run(cmd_line, stdout=output_file, stderr=subprocess.STDOUT)
+    handle.check_returncode()
+
+
 def main(database_path: str, site_count: int, client_count: int, transaction_count: int, keep_files: bool,
          build_version: str, schema_file: Optional[str]):
 
@@ -193,6 +203,11 @@ schema file: {schema_file}
     cc_handle.terminate()
     cc_exit_code = cc_handle.wait()
     print(f'Concurrency controller finished with exit code {cc_exit_code}')
+
+    # check serializability
+    print("Checking global serializability of histories...")
+    check_serializability(prefix, build_version, site_infos)
+    print(f'Serializability succeeded')
 
     print('done!')
 
