@@ -160,6 +160,10 @@ schema file: {schema_file}
     prefix = files_prefix(keep_files)
     print(f'Writing result files in {prefix}')
 
+    # make the prefix directory
+    if not os.path.isdir(prefix):
+        os.mkdir(prefix)
+
     # set up the database file if there's a schema
     if schema_file is not None:
         setup_database(database_path, schema_file)
