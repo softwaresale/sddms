@@ -92,7 +92,11 @@ impl<LineSourceT: BufRead> ActionParser<LineSourceT> {
                         let captures = info_extractor.captures(trimmed_line).unwrap();
                         let timestamp_str = captures.get(1).unwrap().as_str().trim();
                         let format = Iso8601::DATE_TIME_OFFSET;
-                        let instant = OffsetDateTime::parse(timestamp_str, &format).unwrap();
+                        let Ok(instant) = OffsetDateTime::parse(timestamp_str, &format) else {
+                            // not great
+                            warn!("Skipping line '{}' due to bad timestamp", trimmed_line);
+                            continue;
+                        };
 
                         let site_id = captures.get(2).unwrap()
                             .as_str()
