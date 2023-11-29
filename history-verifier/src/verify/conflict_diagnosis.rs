@@ -1,21 +1,17 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::fmt::{Display, Formatter};
+
 use colored::{Color, Colorize};
 use rand::seq::SliceRandom;
 use rand::thread_rng;
-use crate::history_file_parser::Action;
-use crate::transaction_id::{TransactionId, TransactionPair};
-use crate::verify::TableSets;
+use crate::history_file_parser::action::Action;
+use crate::organize::AssociatedActionMap;
+use crate::transaction_id::{TransactionId};
+use crate::verify::conflict_graph::ConflictGraph;
+use crate::verify::conflict_type::{ConflictType, ConflictVector};
 
-// get conflicting transactions
-#[derive(Debug)]
-pub struct ConflictDiagnosis<'actions_lifetime> {
-    pub(super) conflicting_transactions: HashMap<TransactionId, Vec<&'actions_lifetime Action>>,
-    pub(super) conflicting_sets: HashMap<TransactionId, TableSets>,
-    pub(super) conflict_range: &'actions_lifetime [Action],
-}
-
-fn choose_random_colors<ValueT>(transactions: &HashMap<TransactionId, ValueT>) -> HashMap<TransactionId, Color> {
+fn choose_random_colors(transactions: &HashSet<TransactionId>) -> HashMap<TransactionId, Color> {
     let mut rng = thread_rng();
     let colors = vec![
         Color::Blue,
@@ -26,84 +22,116 @@ fn choose_random_colors<ValueT>(transactions: &HashMap<TransactionId, ValueT>) -
 
     let sample = colors.choose_multiple(&mut rng, transactions.len()).collect::<Vec<_>>();
 
-    transactions.keys()
+    transactions.into_iter()
         .zip(sample)
         .map(|(left, right)| (left.clone(), right.clone()))
         .collect::<HashMap<_, _>>()
 }
 
-fn format_conflicts(f: &mut Formatter<'_>, conflicting_sets: &HashMap<TransactionId, TableSets>, color_map: &HashMap<TransactionId, Color>) -> std::fmt::Result {
-    // TODO refactor this into standalone method
-    let mut transaction_pairs: HashSet<TransactionPair> = HashSet::new();
-    for (left, _) in conflicting_sets {
-        for (right, _) in conflicting_sets {
-            if left != right {
-                let pair = TransactionPair::new(*left, *right);
-                transaction_pairs.insert(pair);
-            }
+pub struct ConflictDiagnosis<'action> {
+    /// Flat set of transactions in conflict
+    conflicting_transactions: HashSet<TransactionId>,
+    /// the cycle of issues that cause the issue
+    conflict_sequence: Vec<(TransactionId, TransactionId, ConflictVector<'action>)>,
+    /// the range of actions involved with this conflict
+    conflict_range: &'action [Action],
+}
+
+impl<'action> ConflictDiagnosis<'action> {
+    pub fn new(mut path: Vec<TransactionId>, conflict_graph: &ConflictGraph<'action>, associated_action_map: &'action AssociatedActionMap) -> Self {
+
+        // duplicate first item in path to end to complete cycle
+        path.push(*path.first().unwrap());
+
+        let conflicting_transactions = path.iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+
+        let mut sequence: Vec<(TransactionId, TransactionId, ConflictVector<'action>)> = Vec::new();
+
+        let mut iter = path.into_iter().peekable();
+        loop {
+            let Some(left_transaction) = iter.next() else {
+                break;
+            };
+
+            let Some(right_transaction) = iter.peek() else {
+                break;
+            };
+
+            let conflict_vec = conflict_graph.get_conflict_vec(&left_transaction, right_transaction)
+                .expect("Conflict vector between transactions in diagnosis should not be empty");
+
+            sequence.push((left_transaction, *right_transaction, conflict_vec.clone()));
+        }
+
+        let range = associated_action_map.get_transactions_range(&conflicting_transactions);
+
+        Self {
+            conflicting_transactions,
+            conflict_sequence: sequence,
+            conflict_range: range,
         }
     }
+}
 
-    // now that we have a set of unique pairs to compare against, do that
-    for pair in transaction_pairs {
-        let (left, right) = pair.into();
-        let left_color = color_map.get(&left).cloned().unwrap_or(Color::White);
-        let right_color = color_map.get(&right).cloned().unwrap_or(Color::White);
-        let left_set = conflicting_sets.get(&left).unwrap();
-        let right_set = conflicting_sets.get(&right).unwrap();
+fn format_conflicts<ColorGetterT>(f: &mut Formatter<'_>, conflict_vector: &ConflictVector, color_getter: ColorGetterT) -> fmt::Result
+    where ColorGetterT: Fn(&TransactionId) -> Color
+{
+    for conflict in conflict_vector {
+        let (msg, edge) = match conflict {
+            ConflictType::ReadWrite(edge) => {
+                ("Read-Write conflict".black().on_bright_yellow(), edge)
+            }
+            ConflictType::WriteRead(edge) => {
+                ("Write-Read conflict".black().on_yellow(), edge)
+            }
+            ConflictType::WriteWrite(edge) => {
+                ("Write-Write conflict".white().on_red(), edge)
+            }
+        };
 
-        // check for read/write conflicts
-        for intersecting_table in left_set.read_set.intersection(&right_set.write_set) {
-            let left_msg = format!("{} reads {}", left, intersecting_table);
-            let right_msg = format!("{} writes {}", right, intersecting_table);
+        let causing_txn_id = TransactionId::from(edge.causing_action);
+        let conflicted_txn_id = TransactionId::from(edge.conflicted_action);
 
-            writeln!(f, "{} {} and {}", "read-write".black().on_bright_yellow(), left_msg.color(left_color.clone()), right_msg.color(right_color.clone()))?;
-        }
-
-        for intersecting_table in left_set.write_set.intersection(&right_set.read_set) {
-            let left_msg = format!("{} writes {}", left, intersecting_table);
-            let right_msg = format!("{} reads {}", right, intersecting_table);
-
-            writeln!(f, "{} {} and {}", "read-write".black().on_bright_yellow(), left_msg.color(left_color.clone()), right_msg.color(right_color.clone()))?;
-        }
-
-        for intersecting_table in left_set.write_set.intersection(&right_set.write_set) {
-            let left_msg = format!("{} writes {}", left, intersecting_table);
-            let right_msg = format!("{} writes {}", right, intersecting_table);
-
-            writeln!(f, "{} {} and {}", "write-write".black().on_bright_red(), left_msg.color(left_color.clone()), right_msg.color(right_color.clone()))?;
-        }
+        writeln!(f, "{}", msg)?;
+        writeln!(f, "{}", edge.causing_action.to_string().color(color_getter(&causing_txn_id)))?;
+        writeln!(f, "conflicts with")?;
+        writeln!(f, "{}", edge.conflicted_action.to_string().color(color_getter(&conflicted_txn_id)))?;
+        writeln!(f, "over tables")?;
+        writeln!(f, "{:?}", edge.conflicting_tables)?;
     }
 
     Ok(())
 }
 
-impl<'actions_lifetime> Display for ConflictDiagnosis<'actions_lifetime> {
+impl<'action> Display for ConflictDiagnosis<'action> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
 
         let color_map = choose_random_colors(&self.conflicting_transactions);
 
-        for (id, stmts) in &self.conflicting_transactions {
-            writeln!(f, "Transaction {}:", id)?;
-            for stmt in stmts {
-                let line_format = format!("{}", stmt);
-                writeln!(f, "{}", line_format.color(color_map.get(id).unwrap().clone()))?;
-            }
-            writeln!(f, "")?;
+        let color_map_getter = |txn_id: &TransactionId| color_map.get(txn_id).cloned().unwrap_or(Color::White);
+        let color_txn_id = |txn_id: &TransactionId| txn_id.to_string().color(color_map_getter(txn_id));
+
+        writeln!(f, "Conflict Error:")?;
+        let conflicting_transactions_set_string = self.conflicting_transactions.iter()
+            .map(|trans| format!("{trans}").color(color_map_getter(trans)).to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        writeln!(f, "Transactions {{ {} }} are in conflict", conflicting_transactions_set_string)?;
+
+        for (left, right, conflict_vector) in &self.conflict_sequence {
+            writeln!(f, "{} ~> {} in the following {} way(s)", color_txn_id(left), color_txn_id(right), conflict_vector.len())?;
+            format_conflicts(f, conflict_vector, color_map_getter)?;
         }
 
-        writeln!(f, "Conflicting tables:")?;
-        format_conflicts(f, &self.conflicting_sets, &color_map)?;
-        writeln!(f, "")?;
+        writeln!(f, "Conflicts over range:")?;
 
-        writeln!(f, "Conflicting range:")?;
         for action in self.conflict_range {
-            let action_fmt = format!("{}", action);
-            let action_trans_id = TransactionId::from(action);
-            let color = color_map.get(&action_trans_id).cloned()
-                .unwrap_or(Color::White);
-
-            writeln!(f, "{}", action_fmt.color(color))?;
+            let txn_id = TransactionId::from(action);
+            let colored_string = format!("{}", action).color(color_map_getter(&txn_id));
+            writeln!(f, "{}", colored_string)?;
         }
 
         Ok(())

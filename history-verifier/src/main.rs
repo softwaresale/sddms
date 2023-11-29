@@ -4,7 +4,8 @@ use std::io::BufReader;
 use clap::Parser;
 use log::{debug, error, info, LevelFilter};
 use crate::args::Args;
-use crate::history_file_parser::{Action, ActionParser};
+use crate::history_file_parser::ActionParser;
+use crate::history_file_parser::action::Action;
 use crate::organize::AssociatedActionMap;
 use crate::verify::verify_action_history;
 
@@ -13,6 +14,7 @@ mod args;
 mod organize;
 mod verify;
 mod transaction_id;
+mod serial_view;
 
 fn main() -> Result<(), Box<dyn Error>> {
 
@@ -46,11 +48,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     info!("Sorting actions chronologically...");
     actions.sort_by(|left, right| left.instant.cmp(&right.instant));
-    /*
-    println!("Chronological actions:");
-    for action in &actions {
-        println!("{:?}", action);
-    }*/
 
     info!("Associating actions...");
     let associated_actions = AssociatedActionMap::new()
@@ -65,7 +62,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         Err(conflict_error) => {
             let error_count = conflict_error.len();
             for err in conflict_error {
-                println!("Conflict error:");
                 println!("{}\n", err);
             }
             error!("There was/were {} conflicts", error_count);

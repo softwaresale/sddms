@@ -1,6 +1,6 @@
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
-use crate::history_file_parser::Action;
+use crate::history_file_parser::action::Action;
 
 #[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct TransactionId(pub(crate) u32, pub(crate) u32, pub(crate) u32);

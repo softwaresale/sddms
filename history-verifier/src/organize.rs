@@ -1,8 +1,8 @@
 use std::collections::{Bound, HashMap, HashSet};
-use std::ops::{Range, RangeBounds};
+use std::ops::{RangeBounds};
 use rand::seq::SliceRandom;
 use rand::thread_rng;
-use crate::history_file_parser::Action;
+use crate::history_file_parser::action::Action;
 use crate::transaction_id::TransactionId;
 
 type TransactionMap = HashMap<u32, Vec<usize>>;
@@ -53,7 +53,7 @@ impl AssociatedActionMap {
 
         let mut order: Vec<Vec<&Action>> = Vec::new();
         for (site, client, trans) in coordinates {
-            let transaction = self.borrow_transaction(site, client, trans);
+            let transaction = self.borrow_transaction_coordinates(site, client, trans);
             if let Some(transaction) = transaction {
                 order.push(transaction);
             }
@@ -66,7 +66,11 @@ impl AssociatedActionMap {
         &self.actions
     }
 
-    pub fn borrow_transaction(&self, site_id: u32, client_id: u32, transaction_id: u32) -> Option<Vec<&Action>> {
+    pub fn borrow_transaction(&self, transaction_id: &TransactionId) -> Option<Vec<&Action>> {
+        self.borrow_transaction_coordinates(transaction_id.0, transaction_id.1, transaction_id.2)
+    }
+
+    pub fn borrow_transaction_coordinates(&self, site_id: u32, client_id: u32, transaction_id: u32) -> Option<Vec<&Action>> {
         if let Some(indices) = self.get_transaction_indices(site_id, client_id, transaction_id) {
             let transaction_vec = indices.into_iter()
                 .map(|index| self.actions.get(*index).unwrap())
@@ -76,6 +80,10 @@ impl AssociatedActionMap {
         } else {
             None
         }
+    }
+
+    pub fn get_transaction_range(&self, transaction_id: TransactionId) -> &[Action] {
+        self.get_transactions_range(&HashSet::from([transaction_id]))
     }
 
     pub fn get_transactions_range(&self, transactions: &HashSet<TransactionId>) -> &[Action] {
@@ -99,7 +107,7 @@ impl AssociatedActionMap {
         self.get_action_range(min..=max)
     }
 
-    pub fn get_action_range<RangeT: RangeBounds<usize>>(&self, range: RangeT) -> &[Action] {
+    fn get_action_range<RangeT: RangeBounds<usize>>(&self, range: RangeT) -> &[Action] {
 
         let lower = match range.start_bound() {
             Bound::Included(lower) => *lower,
@@ -114,6 +122,28 @@ impl AssociatedActionMap {
         };
 
         &self.actions[lower..=upper]
+    }
+
+    pub fn get_all_transaction_ids(&self) -> Vec<TransactionId> {
+        let mut vec: Vec<TransactionId> = Vec::new();
+        for (site_id, client_map) in &self.site_map {
+            for (client_id, transaction_map) in client_map {
+                for (transaction_id, _) in transaction_map {
+                    vec.push(TransactionId(*site_id, *client_id, *transaction_id));
+                }
+            }
+        }
+
+        vec.sort();
+        vec
+    }
+
+    /// Get the other transactions that are running concurrently with the given transaction
+    pub fn get_concurrent_transactions(&self, transaction_id: &TransactionId) -> HashSet<TransactionId> {
+        self.get_transactions_range(&HashSet::from([*transaction_id])).into_iter()
+            .map(|action| TransactionId::from(action))
+            .filter(|txn_id| txn_id != transaction_id)
+            .collect()
     }
 
     fn get_transaction_indices(&self, site_id: u32, client_id: u32, transaction_id: u32) -> Option<&Vec<usize>> {
