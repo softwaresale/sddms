@@ -4,10 +4,10 @@ mod deadlock_graph;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{Display, Formatter};
-use log::{debug, info, trace};
+use log::{debug, info};
 use tokio::sync::MutexGuard;
 use tokio::task::yield_now;
-use sddms_services::central_controller::LockMode;
+use sddms_services::shared::{LockMode, LockRequest};
 use sddms_shared::error::{SddmsError, SddmsTermError};
 use crate::live_transaction_set::LiveTransactionSet;
 use crate::lock_table::deadlock_graph::DeadlockGraph;
@@ -149,61 +149,93 @@ impl LockTable {
         }
     }
 
-    pub async fn acquire_lock(&self, transaction_id: TransactionId, resource: &str, mode: LockMode) -> Result<LockRequestResult, SddmsTermError> {
+    pub async fn acquire_locks(&self, transaction_id: TransactionId, mut requests: Vec<LockRequest>) -> Result<LockRequestResult, SddmsTermError> {
         if !self.live_transactions.is_growing(&transaction_id).await {
             return Err(SddmsError::central(format!("Transaction {} is not growing, so it cannot acquire locks", transaction_id)).into())
         }
 
-        // if resource doesn't exist, add it
-        self.add_new_resource(resource).await;
+        // sort from lowest to greatest, which means shared requests go first
+        requests.sort();
 
-        // if this lock is already acquired, do nothing
-        let has_lock = self.has_lock_already(&transaction_id, resource, mode).await;
-        if has_lock {
-            info!("{} already acquired lock {}", transaction_id, resource);
-            return Ok(LockRequestResult::HadLock)
+        // for each lock request
+        for request in &requests {
+
+            let resource = &request.record;
+            let mode = request.mode().clone();
+
+            // if resource doesn't exist, add it
+            self.add_new_resource(&resource).await;
+
+            // if this lock is already acquired, do nothing
+            let has_lock = self.has_lock_already(&transaction_id, resource, mode).await;
+            if has_lock {
+                info!("{} already acquired lock {}", transaction_id, resource);
+                // return Ok(LockRequestResult::HadLock)
+                continue
+            }
+
+            // attempt promoting the lock
+            let lock_promoted = self.attempt_lock_promotion(&transaction_id, resource, mode).await;
+            if lock_promoted {
+                info!("{} promoted its shared lock on {} to exclusive", transaction_id, resource);
+                // return Ok(LockRequestResult::PromotedLock)
+                continue
+            }
+
+            // if we don't own the lock or are unable to promote the lock, then we can draw a few
+            // conclusions.
+            // 1. It is possible that there are no locks currently in the request queue. That's fine.
+            //    We need to enqueue our lock request
+            // 2. If there are requests in the queue, then the first request does not contain our
+            //    request is not compatible with the current lock. Either we don't have it or we
+            //    can't promote it.
+            //
+            // In either of these cases, we need to enqueue our locking request.
+
+            // check if this will cause deadlock
+            let caused_deadlock = self.detect_deadlock(transaction_id, &resource).await;
+            if let Some(deadlock_cause) = caused_deadlock {
+                info!("{}'s attempt to acquire {} lock on {} will cause deadlocking. Failing.", transaction_id, mode, resource);
+                return Ok(LockRequestResult::Deadlocked(deadlock_cause));
+            }
+
+            // get in the queue for the given resource
+            self.enqueue_resource(transaction_id, resource, mode).await?;
+            info!("Transaction {} enqueued {:?} lock request for {}", transaction_id, mode, resource);
         }
-
-        // attempt promoting the lock
-        let lock_promoted = self.attempt_lock_promotion(&transaction_id, resource, mode).await;
-        if lock_promoted {
-            info!("{} promoted its shared lock on {} to exclusive", transaction_id, resource);
-            return Ok(LockRequestResult::PromotedLock)
-        }
-
-        // if we don't own the lock or are unable to promote the lock, then we can draw a few
-        // conclusions.
-        // 1. It is possible that there are no locks currently in the request queue. That's fine.
-        //    We need to enqueue our lock request
-        // 2. If there are requests in the queue, then the first request does not contain our
-        //    request is not compatible with the current lock. Either we don't have it or we
-        //    can't promote it.
-        //
-        // In either of these cases, we need to enqueue our locking request.
-
-        // check if this will cause deadlock
-        let caused_deadlock = self.detect_deadlock(transaction_id, resource).await;
-        if let Some(deadlock_cause) = caused_deadlock {
-            info!("{}'s attempt to acquire {} lock on {} will cause deadlocking. Failing.", transaction_id, mode, resource);
-            return Ok(LockRequestResult::Deadlocked(deadlock_cause));
-        }
-
-        // get in the queue for the given resource
-        self.enqueue_resource(transaction_id, resource, mode).await?;
-        info!("Transaction {} enqueued {:?} lock request for {}", transaction_id, mode, resource);
 
         // wait until we are at the front of the queue for the given resource
         let lock_result = loop {
             let resources = self.resources.lock().await;
-            let resource_queue = resources.get(resource).unwrap();
-            let front_lock = resource_queue.front().unwrap();
 
-            if front_lock.is_locked_by(&transaction_id) {
-                info!("After waiting, transaction {} acquired lock for {}", transaction_id, resource);
+            // check if we acquired all locks
+
+            let mut request_iter = requests.iter();
+            let lock_acquisition_attempt = 'check_loop: loop {
+                let request = request_iter.next();
+                if request.is_none() {
+                    // if we are out of requests to check, then we acquired all locks!
+                    break 'check_loop true;
+                }
+                let request = request.unwrap();
+                let resource = &request.record;
+
+                let resource_queue = resources.get(resource).unwrap();
+                let front_lock = resource_queue.front().unwrap();
+
+                // if we don't have one of the locks we want, fail now. Yield and continue
+                if !front_lock.is_locked_by(&transaction_id) {
+                    break 'check_loop false;
+                }
+            };
+
+            if lock_acquisition_attempt {
+                // we successfully acquired the lock, so we're done!
                 break LockRequestResult::AcquiredLock;
+            } else {
+                // we are missing a lock, go back around again
+                yield_now().await;
             }
-
-            yield_now().await;
         };
 
         // we got it finally

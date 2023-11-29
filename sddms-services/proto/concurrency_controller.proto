@@ -3,6 +3,7 @@ syntax = "proto3";
 
 import "api_result.proto";
 import "finalize_mode.proto";
+import "lock_mode.proto";
 
 package sddms.cc;
 
@@ -48,25 +49,17 @@ message RegisterTransactionResponse {
   }
 }
 
-enum LockMode {
-  LOCK_MODE_UNSPECIFIED = 0;
-  LOCK_MODE_EXCLUSIVE = 1;
-  LOCK_MODE_SHARED = 2;
-}
-
 message AcquireLockRequest {
   // the site requesting the lock
   uint32 site_id = 1;
   // the transaction requesting the lock
   uint32 transaction_id = 2;
-  // the table we want to lock
-  string record_name = 3;
-  // what kind of lock we want to acquire
-  LockMode lock_mode = 4;
+  // the locks we want to acquire
+  repeated sddms.shared.LockRequest lock_requests = 3;
 }
 
 message AcquireLockResults {
-  // if the lock was successfully acquired??
+  // if the locks were successfully acquired??
   bool acquired = 1;
 }
 

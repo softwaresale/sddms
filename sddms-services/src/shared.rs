@@ -1,3 +1,5 @@
+pub mod lock_request;
+
 use tonic::include_proto;
 use sddms_shared::error::{SddmsError, SddmsTermError};
 use sddms_shared::sql_metadata::TransactionStmt;

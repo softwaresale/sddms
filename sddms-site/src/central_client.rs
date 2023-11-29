@@ -2,10 +2,10 @@ use log::debug;
 use tonic::transport::Channel;
 use sddms_services::central_controller::concurrency_controller_service_client::ConcurrencyControllerServiceClient;
 use sddms_services::central_controller::register_site_response::RegisterSitePayload;
-use sddms_services::central_controller::{AcquireLockRequest, FinalizeTransactionRequest, LockMode, RegisterSiteRequest, RegisterTransactionRequest};
+use sddms_services::central_controller::{AcquireLockRequest, FinalizeTransactionRequest, RegisterSiteRequest, RegisterTransactionRequest};
 use sddms_services::central_controller::acquire_lock_response::AcquireLockPayload;
 use sddms_services::central_controller::register_transaction_response::RegisterTransactionPayload;
-use sddms_services::shared::{FinalizeMode, ReturnStatus};
+use sddms_services::shared::{FinalizeMode, LockRequest, ReturnStatus};
 use sddms_shared::error::{SddmsError, SddmsTermError};
 
 pub enum AcquireLockRet {
@@ -71,14 +71,12 @@ impl CentralClient {
         }
     }
 
-    pub async fn acquire_table_lock(&self, site_id: u32, transaction_id: u32, table: &str, lock_mode: LockMode) -> Result<AcquireLockRet, SddmsError> {
-        let mut request = AcquireLockRequest {
+    pub async fn acquire_table_lock(&self, site_id: u32, transaction_id: u32, lock_requests: Vec<LockRequest>) -> Result<AcquireLockRet, SddmsError> {
+        let request = AcquireLockRequest {
             site_id,
             transaction_id,
-            record_name: table.to_string(),
-            lock_mode: 0,
+            lock_requests: lock_requests.clone()
         };
-        request.set_lock_mode(lock_mode);
 
         let response = self.client.clone().acquire_lock(request)
             .await
@@ -94,7 +92,7 @@ impl CentralClient {
                     Ok(AcquireLockRet::Deadlock(SddmsTermError::from(SddmsError::central("Acquiring locks failed due to deadlock"))))
                 } else {
                     let err: SddmsError = api_err.into();
-                    Err(SddmsError::site(format!("Failed to acquire lock for {}", table))
+                    Err(SddmsError::site(format!("Failed to acquire locks {:?}", lock_requests))
                         .with_cause(err))
                 }
             }

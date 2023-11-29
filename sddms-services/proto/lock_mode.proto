@@ -1,0 +1,15 @@
+
+syntax = "proto3";
+
+package sddms.shared;
+
+enum LockMode {
+  LOCK_MODE_UNSPECIFIED = 0;
+  LOCK_MODE_EXCLUSIVE = 1;
+  LOCK_MODE_SHARED = 2;
+}
+
+message LockRequest {
+  string record = 1;
+  LockMode mode = 2;
+}

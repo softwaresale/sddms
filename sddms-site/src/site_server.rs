@@ -3,8 +3,7 @@ use std::path::{Path, PathBuf};
 use log::{debug, error, info};
 use rusqlite::Connection;
 use tonic::{Request, Response, Status};
-use sddms_services::central_controller::LockMode;
-use sddms_services::shared::{ApiError, FinalizeMode, ReturnStatus};
+use sddms_services::shared::{ApiError, FinalizeMode, LockMode, LockRequest, ReturnStatus};
 use sddms_services::site_controller::{BeginTransactionRequest, BeginTransactionResponse, BeginTransactionResults, FinalizeTransactionRequest, FinalizeTransactionResponse, FinalizeTransactionResults, InvokeQueryRequest, InvokeQueryResponse, InvokeQueryResults, RegisterClientRequest, RegisterClientResponse, RegisterClientResults, ReplicationUpdateRequest, ReplicationUpdateResponse};
 use sddms_services::site_controller::begin_transaction_response::BeginTransactionPayload;
 use sddms_services::site_controller::finalize_transaction_response::FinalizeTransactionPayload;
@@ -47,33 +46,42 @@ impl SddmsSiteManagerService {
     }
 
     async fn acquire_locks_for_txn(&self, trans_id: u32, read_set: &[String], write_set: &[String]) -> Result<(), InvokeQueryResponse> {
-        for tab in read_set {
-            debug!("Transaction {} is acquiring {} in shared mode...", trans_id, tab);
-            let lock_result = self.acquire_table_lock(trans_id, tab, LockMode::Shared).await?;
-            if let AcquireLockRet::Deadlock(deadlock_err) = lock_result {
+        let lock_requests = {
+            let mut lock_requests = read_set.into_iter()
+                .map(|table| LockRequest::new(table, LockMode::Shared))
+                .collect::<Vec<_>>();
+
+            write_set.into_iter()
+                .map(|table| LockRequest::new(table, LockMode::Exclusive))
+                .for_each(|request| lock_requests.push(request));
+
+            lock_requests
+        };
+
+        info!("Acquiring locks: {:?}", lock_requests);
+
+        let lock_result = self.cc_client.acquire_table_lock(self.site_id, trans_id, lock_requests.clone())
+            .await
+            .map_err(|err| {
+                error!("Error while trying to acquire lock: {}", err);
+                InvokeQueryResponse::from(err)
+            })?;
+
+        match lock_result {
+            AcquireLockRet::Ok => {
+                info!("Successfully acquired locks: {:?}", lock_requests);
+                Ok(())
+            }
+            AcquireLockRet::Deadlock(deadlock_err) => {
                 let mut response = InvokeQueryResponse::from(deadlock_err);
                 response.set_ret(ReturnStatus::Deadlocked);
-                return Err(response);
+                Err(response)
             }
-            debug!("Transaction {} acquired {} in shared mode", trans_id, tab);
         }
-
-        for tab in write_set {
-            debug!("Transaction {} is acquiring {} in exclusive mode...", trans_id, tab);
-            let lock_result = self.acquire_table_lock(trans_id, tab, LockMode::Exclusive).await?;
-            if let AcquireLockRet::Deadlock(deadlock_err) = lock_result {
-                let mut response = InvokeQueryResponse::from(deadlock_err);
-                response.set_ret(ReturnStatus::Deadlocked);
-                return Err(response);
-            }
-            debug!("Transaction {} acquired {} in exclusive mode", trans_id, tab);
-        }
-
-        Ok(())
     }
 
-    async fn acquire_table_lock(&self, trans_id: u32, table: &str, mode: LockMode) -> Result<AcquireLockRet, InvokeQueryResponse> {
-        self.cc_client.acquire_table_lock(self.site_id, trans_id, table, mode)
+    async fn acquire_table_lock(&self, trans_id: u32, lock_requests: Vec<LockRequest>) -> Result<AcquireLockRet, InvokeQueryResponse> {
+        self.cc_client.acquire_table_lock(self.site_id, trans_id, lock_requests)
             .await
             .map_err(|err| {
                 error!("Error while trying to acquire lock: {}", err);

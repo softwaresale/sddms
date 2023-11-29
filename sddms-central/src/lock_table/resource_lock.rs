@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use sddms_services::central_controller::LockMode;
+use sddms_services::shared::LockMode;
 use crate::transaction_id::TransactionId;
 
 pub enum AcquireLockMode {

@@ -102,15 +102,15 @@ impl ConcurrencyControllerService for CentralService {
     async fn acquire_lock(&self, request: Request<AcquireLockRequest>) -> Result<Response<AcquireLockResponse>, Status> {
         let acquire_lock_request = request.into_inner();
         let trans_id = TransactionId::new(acquire_lock_request.site_id, acquire_lock_request.transaction_id);
-        info!("Transaction {} is trying to acquire lock for {} in {:?} mode", trans_id, acquire_lock_request.record_name, acquire_lock_request.lock_mode());
+        info!("Transaction {} is trying to acquire locks: {:?}", trans_id, &acquire_lock_request.lock_requests);
 
-        let lock_result = self.lock_tab.acquire_lock(trans_id, &acquire_lock_request.record_name, acquire_lock_request.lock_mode()).await;
+        let lock_result = self.lock_tab.acquire_locks(trans_id, acquire_lock_request.lock_requests.clone()).await;
 
         let response = match lock_result {
             Ok(result) => {
                 match result {
                     LockRequestResult::Deadlocked(cause) => {
-                        info!("{} successfully locked {}: {}", trans_id, acquire_lock_request.record_name, cause);
+                        info!("{} deadlocked: {}", trans_id, cause);
                         let mut acquire_lock_response = AcquireLockResponse::default();
                         acquire_lock_response.set_ret(ReturnStatus::Deadlocked);
                         acquire_lock_response.acquire_lock_payload = Some(AcquireLockPayload::Error(ApiError::from(cause)));
@@ -120,7 +120,7 @@ impl ConcurrencyControllerService for CentralService {
                         let mut acquire_lock_response = AcquireLockResponse::default();
                         acquire_lock_response.set_ret(ReturnStatus::Ok);
                         acquire_lock_response.acquire_lock_payload = Some(AcquireLockPayload::Results(AcquireLockResults { acquired: true }));
-                        info!("{} successfully locked {}: {}", trans_id, acquire_lock_request.record_name, success);
+                        info!("{} successfully locked {:?} :: {}", trans_id, &acquire_lock_request.lock_requests, success);
                         acquire_lock_response
                     }
                 }
